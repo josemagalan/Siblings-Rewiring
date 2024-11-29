@@ -70,9 +70,36 @@ generar_dataset <- function(num_grupos, alumnos_por_grupo, num_cursos, lambda_he
   return(data)
 }
 
-# Generar un dataset de ejemplo.
-set.seed(123)  # Para reproducibilidad.
-dataset <- generar_dataset(num_grupos, alumnos_por_grupo, num_cursos, lambda_hermanos)
 
-# Mostrar el resultado.
-print(dataset)
+# Parámetros variables
+num_grupos_list <- 2:4  # Número de grupos variando entre 2 y 4
+lambda_hermanos_list <- c(0.1, 0.2, 0.3)  # Valores de lambda para la distribución de Poisson
+seed_list <- c(123, 456, 789)  # Semillas diferentes para cada dataset
+
+
+
+# Iterar sobre las combinaciones de parámetros
+for (num_grupos in num_grupos_list) {
+  for (lambda_hermanos in lambda_hermanos_list) {
+    for (seed in seed_list) {
+      # Establecer la semilla
+      set.seed(seed)
+      
+      # Generar el dataset
+      dataset <- generar_dataset(num_grupos, alumnos_por_grupo, num_cursos, lambda_hermanos)
+      
+      # Crear el nombre del archivo incluyendo todos los parámetros
+      nombre_archivo <- paste0(
+        "ds_",
+        num_grupos, "_",
+        alumnos_por_grupo, "_",
+        num_cursos, "_",
+        lambda_hermanos, "_",
+        seed, ".csv"
+      )
+      
+      # Guardar el dataset en la carpeta 'datasets'
+      write.csv(dataset, file = file.path("datasets", nombre_archivo), row.names = FALSE)
+    }
+  }
+}
