@@ -4,79 +4,110 @@ library(tidyverse)
 num_grupos <- 3          # Número de grupos por curso
 alumnos_por_grupo <- 20  # Número de alumnos por grupo
 num_cursos <- 9          # Número de cursos
-lambda_hermanos <- 0.2   # Parámetro lambda para la distribución de Poisson (ajusta según necesidad)
+lambda_hermanos <- 0.5   # Parámetro lambda para la distribución de Poisson
 
-#' Genera un dataset de alumnos con relaciones de hermanos bidireccionales y coherentes.
-#'
-#' @param num_grupos Número de grupos por curso.
-#' @param alumnos_por_grupo Número de alumnos por grupo.
-#' @param num_cursos Número de cursos.
-#' @param lambda_hermanos Parámetro lambda para la distribución de Poisson (determina el número de hermanos).
-#' @return Un dataframe 'tibble' con información de alumnos y sus hermanos.
-#' @examples
-#' dataset <- generar_dataset(3, 30, 4, 0.2)
 generar_dataset <- function(num_grupos, alumnos_por_grupo, num_cursos, lambda_hermanos) {
   
   # Calcular el número total de alumnos.
   total_alumnos <- num_grupos * alumnos_por_grupo * num_cursos
   
-  # Crear el dataframe inicial de alumnos.
-  data <- tibble(
-    alumno_id = 1:total_alumnos,
-    curso = rep(1:num_cursos, each = num_grupos * alumnos_por_grupo),
-    grupo = rep(rep(1:num_grupos, each = alumnos_por_grupo), times = num_cursos)
-  )
-  
-  # Inicializar una lista para almacenar los grupos de hermanos.
-  # Cada alumno comienza en su propio grupo de hermanos (solo él mismo).
-  grupos_hermanos <- vector("list", total_alumnos)
-  for (i in 1:total_alumnos) {
-    grupos_hermanos[[i]] <- c(i)
+  # Paso 1: Generar tamaños de familias
+  tamanos_familias <- c()
+  while (sum(tamanos_familias) < total_alumnos) {
+    # Generamos un tamaño de familia
+    tam_familia <- rpois(1, lambda_hermanos) + 1  # +1 incluye al alumno
+    tamanos_familias <- c(tamanos_familias, tam_familia)
   }
   
-  # Asignar hermanos a cada alumno.
-  for (i in 1:total_alumnos) {
-    # Generar el número de hermanos para el alumno i usando una distribución de Poisson.
-    num_hermanos <- rpois(1, lambda_hermanos)
-    
-    if (num_hermanos > 0) {
-      # Obtener los posibles nuevos hermanos que no estén ya en su grupo de hermanos.
-      posibles_nuevos_hermanos <- setdiff(1:total_alumnos, grupos_hermanos[[i]])
-      
-      if (length(posibles_nuevos_hermanos) > 0) {
-        # Seleccionar hermanos al azar.
-        num_seleccion <- min(num_hermanos, length(posibles_nuevos_hermanos))
-        nuevos_hermanos <- sample(posibles_nuevos_hermanos, size = num_seleccion, replace = FALSE)
-        
-        # Unir los grupos de hermanos de todos los involucrados.
-        grupo_completo <- unique(c(grupos_hermanos[[i]], unlist(grupos_hermanos[nuevos_hermanos])))
-        
-        # Actualizar el grupo de hermanos para cada miembro.
-        for (miembro in grupo_completo) {
-          grupos_hermanos[[miembro]] <- grupo_completo
-        }
-      }
+  # Ajustar el tamaño de la última familia si es necesario
+  diferencia <- sum(tamanos_familias) - total_alumnos
+  if (diferencia > 0) {
+    tamanos_familias[length(tamanos_familias)] <- tamanos_familias[length(tamanos_familias)] - diferencia
+    # Si el tamaño resulta en 0, eliminamos esa familia
+    if (tamanos_familias[length(tamanos_familias)] == 0) {
+      tamanos_familias <- tamanos_familias[-length(tamanos_familias)]
     }
   }
   
-  # Crear una columna en 'data' con los IDs de los hermanos.
-  data$hermano_id <- sapply(1:total_alumnos, function(i) {
-    # Excluir el propio alumno de la lista de hermanos.
-    hermanos <- setdiff(grupos_hermanos[[i]], i)
-    # Convertir la lista de hermanos en una cadena de texto separada por comas.
-    paste(sort(hermanos), collapse = ",")
+  # Asignar IDs a los alumnos
+  alumno_ids <- 1:total_alumnos
+  
+  # Asignar familias a los alumnos
+  familias <- rep(1:length(tamanos_familias), times = tamanos_familias)
+  alumnos_familia <- data.frame(alumno_id = alumno_ids, familia_id = familias)
+  
+  # Paso 2: Asignar alumnos aleatoriamente a cursos y grupos
+  # Crear una lista de todos los cursos y grupos disponibles
+  total_grupos <- num_cursos * num_grupos
+  grupos <- expand.grid(curso = 1:num_cursos, grupo = 1:num_grupos)
+  
+  # Repetir el data frame de grupos para cubrir todos los alumnos
+  grupos_repetidos <- grupos[rep(1:nrow(grupos), each = alumnos_por_grupo), ]
+  
+  # Verificar que tenemos suficientes grupos para todos los alumnos
+  if (nrow(grupos_repetidos) < total_alumnos) {
+    stop("No hay suficientes grupos para asignar a todos los alumnos.")
+  }
+  
+  # Tomamos solo los grupos necesarios
+  grupos_asignados <- grupos_repetidos[1:total_alumnos, ]
+  
+  # Mezclar aleatoriamente los alumnos
+  set.seed(123)  # Puedes cambiar o eliminar la semilla para mayor aleatoriedad
+  alumnos_permutados <- sample(alumno_ids)
+  
+  # Asignar curso y grupo a los alumnos permutados
+  data <- data.frame(
+    alumno_id = alumnos_permutados,
+    curso = grupos_asignados$curso,
+    grupo = grupos_asignados$grupo
+  )
+  
+  # Añadir familia_id
+  data <- merge(data, alumnos_familia, by = "alumno_id")
+  
+  # Ordenar por alumno_id
+  data <- data[order(data$alumno_id), ]
+  
+  # Paso 3: Añadir columna de hermanos
+  data <- data %>%
+    group_by(familia_id) %>%
+    mutate(hermano_id = map(alumno_id, ~ setdiff(alumno_id, .x))) %>%
+    ungroup()
+  
+  # Convertir la lista de hermanos en cadena de texto
+  data$hermano_id <- sapply(data$hermano_id, function(h) {
+    if (length(h) == 0) {
+      return(NA)
+    } else {
+      paste(sort(h), collapse = ",")
+    }
   })
+  
+  # Añadir columna num_hermanos
+  data$num_hermanos <- sapply(data$hermano_id, function(h) {
+    if (is.na(h) || h == "") {
+      return(0)
+    } else {
+      length(strsplit(h, ",")[[1]])
+    }
+  })
+  
+  # Reordenar columnas
+  data <- data %>% select(alumno_id, curso, grupo, familia_id, hermano_id, num_hermanos)
   
   return(data)
 }
 
-
 # Parámetros variables
 num_grupos_list <- 2:4  # Número de grupos variando entre 2 y 4
-lambda_hermanos_list <- c(0.1, 0.2, 0.3)  # Valores de lambda para la distribución de Poisson
-seed_list <- c(123, 456, 789)  # Semillas diferentes para cada dataset
+lambda_hermanos_list <- seq(0.1, 2.0, by = 0.1) # Valores de lambda para la distribución de Poisson
+seed_list <- c(6666, 7777, 14141414)  # Semillas diferentes para cada dataset
 
-
+# Crear la carpeta 'datasets' si no existe
+if (!dir.exists("datasets")) {
+  dir.create("datasets")
+}
 
 # Iterar sobre las combinaciones de parámetros
 for (num_grupos in num_grupos_list) {
@@ -94,7 +125,7 @@ for (num_grupos in num_grupos_list) {
         num_grupos, "_",
         alumnos_por_grupo, "_",
         num_cursos, "_",
-        lambda_hermanos, "_",
+        format(lambda_hermanos, nsmall = 1), "_",
         seed, ".csv"
       )
       
@@ -103,3 +134,4 @@ for (num_grupos in num_grupos_list) {
     }
   }
 }
+
