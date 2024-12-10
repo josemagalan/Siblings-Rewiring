@@ -152,6 +152,8 @@ print(node_components)
 
 
 ##########################
+#### Genético
+##########################
 
 
 # Crear una lista de grupos disponibles por curso
@@ -352,3 +354,226 @@ ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
     color = "Componente"
   ) +
   coord_fixed()
+
+
+
+
+
+################################Heurístic#################
+
+
+#########################
+#####Tener en cuenta que podría haber diferentes grupos por curso en versiones posteriores
+######################################
+
+
+# Se asume que 'data' y 'groups_per_course' están ya preparados.
+# 'data' debe contener: student_id, family_id, course, group (aunque group se va a sobrescribir).
+# 'groups_per_course' es una lista con nombres de curso como claves (ej: "1","2","3",...) 
+# y como valor un vector de grupos disponibles en ese curso.
+
+set.seed(123) # Para reproducibilidad
+
+# 1. Para cada familia, determinamos en qué cursos está
+families_courses <- data %>%
+  group_by(family_id) %>%
+  summarise(courses = list(unique(course)), .groups = "drop")
+
+# 2. Para cada familia, buscar la intersección de grupos disponibles en todos los cursos en los que está
+families_groups <- families_courses %>%
+  mutate(
+    common_groups = map(courses, ~ {
+      # Intersectar todos los vectores de grupos de estos cursos
+      course_vector <- .x
+      # Obtener la lista de vectores de grupos para cada curso
+      group_lists <- lapply(course_vector, function(cc) groups_per_course[[as.character(cc)]])
+      # Intersectar
+      Reduce(intersect, group_lists)
+    })
+  )
+
+# 3. Asignar un grupo aleatorio para cada familia a partir de los common_groups
+# Si no hay intersección, se puede optar por asignar un grupo del primer curso
+families_groups <- families_groups %>%
+  rowwise() %>%
+  mutate(
+    assigned_group = if (length(common_groups) > 0) {
+      sample(common_groups, 1)
+    } else {
+      # Si no hay intersección, tomamos un grupo del primer curso.
+      first_course <- courses[[1]]
+      sample(groups_per_course[[as.character(first_course)]], 1)
+    }
+  ) %>%
+  ungroup()
+
+# 4. Unir esta asignación a los datos originales
+data_assigned <- data %>%
+  left_join(families_groups %>% select(family_id, assigned_group), by = "family_id") %>%
+  mutate(
+    group = assigned_group,
+    node = paste(course, group, sep = "-")
+  ) %>%
+  select(-assigned_group)
+
+# 5. Reconstruir la red
+edges <- data_assigned %>%
+  group_by(family_id) %>%
+  filter(n() > 1) %>%
+  summarise(combinations = list(as.data.frame(t(combn(student_id, 2)))), .groups = "drop") %>%
+  unnest(combinations) %>%
+  rename(student_id1 = V1, student_id2 = V2) %>%
+  inner_join(data_assigned, by = c("student_id1" = "student_id")) %>%
+  inner_join(data_assigned, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
+  transmute(
+    from = node_src,
+    to = node_dst
+  )
+
+# 6. Dataframe de nodos
+nodes <- data_assigned %>%
+  distinct(node, course, group) %>%
+  mutate(
+    x = as.numeric(as.factor(group)),  # posición horizontal (grupo)
+    y = as.numeric(as.factor(course)), # posición vertical (curso)
+    name = node
+  )
+
+# 7. Crear el grafo
+graph_igraph <- graph_from_data_frame(edges, vertices = nodes, directed = FALSE)
+
+# 8. Calcular componentes conexos
+comps <- components(graph_igraph)
+num_components <- comps$no
+component_sizes <- comps$csize
+variance_sizes <- if(length(component_sizes) > 1) var(component_sizes) else 0
+
+cat("Número de componentes conexos:", num_components, "\n")
+cat("Varianza de los tamaños de los componentes:", variance_sizes, "\n")
+
+# 9. Asignar componente a cada nodo
+nodes <- nodes %>%
+  mutate(component = comps$membership)
+
+num_components <- max(nodes$component)
+palette <- brewer.pal(n = min(num_components, 9), name = "Set1")
+node_colors <- palette[nodes$component]
+
+# 10. Crear el grafo con tidygraph y graficar
+graph <- tbl_graph(edges = edges, nodes = nodes, directed = FALSE)
+V(graph)$x <- nodes$x
+V(graph)$y <- nodes$y
+V(graph)$name <- nodes$node
+
+ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
+  # Dibujar autoenlaces (loops)
+  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red", strength = 0.2) +
+  # Dibujar enlaces curvos
+  geom_edge_arc(aes(alpha = 0.5), show.legend = FALSE, color = "grey") +  # Enlaces curvos
+  # Dibujar nodos
+  geom_node_point(aes(color = as.factor(component)), size = 4) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+  scale_color_manual(values = palette) +
+  scale_y_continuous(
+    breaks = seq(floor(min(V(graph)$y)), ceiling(max(V(graph)$y)), by = 1)
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank()
+  ) +
+  labs(
+    title = "Red con Familias Asignadas a un Único Grupo (con Autoenlaces)",
+    x = "Grupo",
+    y = "Curso",
+    color = "Componente"
+  ) +
+  coord_fixed()
+
+
+
+
+##################################################
+#########Heuristic mas GA
+################################################
+
+
+
+# Se asume que 'data' y 'groups_per_course' ya existen
+# groups_per_course <- data %>%
+#   group_by(course) %>%
+#   summarise(groups = list(unique(group))) %>%
+#   deframe()
+
+# Función para generar una única solución heurística
+generate_heuristic_solution <- function(data, groups_per_course) {
+  # Obtener las familias y cursos en los que están
+  families_courses <- data %>%
+    group_by(family_id) %>%
+    summarise(courses = list(unique(course)), .groups = "drop")
+  
+  # Para cada familia, buscar grupo común
+  families_groups <- families_courses %>%
+    mutate(
+      common_groups = map(courses, ~ {
+        # Conjunto de grupos por curso
+        group_lists <- lapply(.x, function(cc) groups_per_course[[as.character(cc)]])
+        # Intersectar
+        Reduce(intersect, group_lists)
+      })
+    ) %>%
+    rowwise() %>%
+    mutate(
+      assigned_group = if (length(common_groups) > 0) {
+        # Hay un grupo común
+        sample(common_groups, 1)
+      } else {
+        # No hay grupo común, tomar uno del primer curso
+        first_course <- courses[[1]]
+        sample(groups_per_course[[as.character(first_course)]], 1)
+      }
+    ) %>%
+    ungroup()
+  
+  # Asignar los grupos a cada estudiante
+  data_assigned <- data %>%
+    left_join(families_groups %>% select(family_id, assigned_group), by = "family_id") %>%
+    mutate(group = assigned_group) %>%
+    select(-assigned_group)
+  
+  # Devolver el vector de asignaciones de grupo
+  return(data_assigned$group)
+}
+
+# Generar población inicial
+set.seed(123)
+popsize <- 100
+num_variables <- nrow(data)
+init_pop <- matrix(nrow = popsize, ncol = num_variables)
+
+for (i in 1:popsize) {
+  init_pop[i, ] <- generate_heuristic_solution(data, groups_per_course)
+}
+
+# Ahora ya puedes correr nsga2 con la población inicial dada por init_pop
+result <- nsga2(
+  fn  = fitness_function,
+  idim = num_variables,
+  odim = 2,
+  lower.bounds = lower_bounds,
+  upper.bounds = upper_bounds,
+  popsize = popsize,
+  generations = 100,
+  cprob = 0.7,
+  mprob = 0.2,
+  cdist = 20,
+  mdist = 20,
+  initialPopulation = init_pop  # Población inicial heurística
+)
+
+# A partir de aquí, el flujo es el mismo que antes.
+pareto_front <- result$value
+
+# Seleccionar y graficar una solución, etc.
