@@ -4,6 +4,7 @@ library(tidygraph)
 library(ggraph)
 library(mco)
 library(RColorBrewer)
+library(writexl)
 
 # Leer el archivo CSV
 data <- read_csv("datasets/ds_4_20_9_0.1_7777.csv")
@@ -47,7 +48,7 @@ V(graph)$name <- nodes$node  # Asegurar que los nombres estén asignados
 # Visualizar la red con ggraph
 ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
   # Dibujar autoenlaces (loops)
-  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red", strength = 0.2) +
+  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red") +
   # Dibujar enlaces normales
   geom_edge_link(aes(alpha = 0.5), show.legend = FALSE) +  
   # Dibujar nodos
@@ -112,7 +113,7 @@ V(graph)$name <- nodes$node  # Asegurar que los nombres estén asignados
 
 # Visualizar la red con ggraph
 ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
-  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red", strength = 0.2) +
+  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red") +
   geom_edge_link(aes(alpha = 0.5), show.legend = FALSE) +  
   geom_node_point(size = 4, color = "blue") +
   geom_node_text(aes(label = name), repel = TRUE) +
@@ -416,6 +417,8 @@ data_assigned <- data %>%
   ) %>%
   select(-assigned_group)
 
+initial_solution<-data_assigned$group
+
 # 5. Reconstruir la red
 edges <- data_assigned %>%
   group_by(family_id) %>%
@@ -467,7 +470,7 @@ V(graph)$name <- nodes$node
 
 ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
   # Dibujar autoenlaces (loops)
-  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red", strength = 0.2) +
+  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red") +
   # Dibujar enlaces curvos
   geom_edge_arc(aes(alpha = 0.5), show.legend = FALSE, color = "grey") +  # Enlaces curvos
   # Dibujar nodos
@@ -496,84 +499,480 @@ ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
 
 
 ##################################################
-#########Heuristic mas GA
+#########Heuristic mas SA##########################
+#El cambio es de la asignación de la familia a un grupo
 ################################################
 
 
-
-# Se asume que 'data' y 'groups_per_course' ya existen
-# groups_per_course <- data %>%
-#   group_by(course) %>%
-#   summarise(groups = list(unique(group))) %>%
-#   deframe()
-
-# Función para generar una única solución heurística
-generate_heuristic_solution <- function(data, groups_per_course) {
-  # Obtener las familias y cursos en los que están
-  families_courses <- data %>%
-    group_by(family_id) %>%
-    summarise(courses = list(unique(course)), .groups = "drop")
-  
-  # Para cada familia, buscar grupo común
-  families_groups <- families_courses %>%
-    mutate(
-      common_groups = map(courses, ~ {
-        # Conjunto de grupos por curso
-        group_lists <- lapply(.x, function(cc) groups_per_course[[as.character(cc)]])
-        # Intersectar
-        Reduce(intersect, group_lists)
-      })
-    ) %>%
-    rowwise() %>%
-    mutate(
-      assigned_group = if (length(common_groups) > 0) {
-        # Hay un grupo común
-        sample(common_groups, 1)
-      } else {
-        # No hay grupo común, tomar uno del primer curso
-        first_course <- courses[[1]]
-        sample(groups_per_course[[as.character(first_course)]], 1)
-      }
-    ) %>%
-    ungroup()
-  
-  # Asignar los grupos a cada estudiante
-  data_assigned <- data %>%
-    left_join(families_groups %>% select(family_id, assigned_group), by = "family_id") %>%
-    mutate(group = assigned_group) %>%
-    select(-assigned_group)
-  
-  # Devolver el vector de asignaciones de grupo
-  return(data_assigned$group)
-}
-
-# Generar población inicial
 set.seed(123)
-popsize <- 100
-num_variables <- nrow(data)
-init_pop <- matrix(nrow = popsize, ncol = num_variables)
 
-for (i in 1:popsize) {
-  init_pop[i, ] <- generate_heuristic_solution(data, groups_per_course)
+
+alpha <- 0.005  # Ajustar este parámetro según importancia relativa
+max_iter <- 1000
+T <- 1.0      # Temperatura inicial
+cooling_rate <- 0.99
+
+evaluate_solution <- function(solution, data) {
+  # solution es un vector con grupos asignados a cada estudiante
+  data_eval <- data
+  data_eval$group <- solution
+  data_eval$node <- paste(data_eval$course, data_eval$group, sep = "-")
+  
+  edges <- data_eval %>%
+    group_by(family_id) %>%
+    filter(n() > 1) %>%
+    summarise(combinations = list(as.data.frame(t(combn(student_id, 2)))), .groups = "drop") %>%
+    unnest(combinations) %>%
+    rename(student_id1 = V1, student_id2 = V2) %>%
+    inner_join(data_eval, by = c("student_id1" = "student_id")) %>%
+    inner_join(data_eval, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
+    transmute(from = node_src, to = node_dst)
+  
+  nodes <- data_eval %>%
+    distinct(node)
+  
+  graph <- graph_from_data_frame(d = edges, vertices = nodes, directed = FALSE)
+  
+  if (ecount(graph) == 0 || vcount(graph) == 0) {
+    return(-Inf)  # Si no hay grafo, puntaje muy malo
+  }
+  
+  comps <- components(graph)
+  num_components <- comps$no
+  component_sizes <- comps$csize
+  variance_sizes <- if (length(component_sizes) < 2) 0 else var(component_sizes, na.rm = TRUE)
+  
+  # Objetivo: maximizar num_components y minimizar varianza
+  return(num_components - alpha * variance_sizes)
 }
 
-# Ahora ya puedes correr nsga2 con la población inicial dada por init_pop
-result <- nsga2(
-  fn  = fitness_function,
-  idim = num_variables,
-  odim = 2,
-  lower.bounds = lower_bounds,
-  upper.bounds = upper_bounds,
-  popsize = popsize,
-  generations = 100,
-  cprob = 0.7,
-  mprob = 0.2,
-  cdist = 20,
-  mdist = 20,
-  initialPopulation = init_pop  # Población inicial heurística
-)
+# Función para generar un vecino
+generate_neighbor <- function(current_solution, data, groups_per_course) {
+  # Seleccionar una familia al azar
+  fam_ids <- unique(data$family_id)
+  selected_fam <- sample(fam_ids, 1)
+  
+  # Subset de la familia seleccionada
+  fam_rows <- data$family_id == selected_fam
+  
+  # Obtener cursos de la familia
+  fam_courses <- unique(data$course[fam_rows])
+  
+  # Obtener la intersección de grupos disponibles para esos cursos
+  group_lists <- lapply(fam_courses, function(cc) groups_per_course[[as.character(cc)]])
+  common_groups <- Reduce(intersect, group_lists)
+  
+  # Si no hay intersección, tomar un grupo del primer curso de la familia
+  if (length(common_groups) == 0) {
+    common_groups <- groups_per_course[[as.character(fam_courses[1])]]
+  }
+  
+  # Elegir un grupo distinto al actual (si posible)
+  current_group <- current_solution[which(fam_rows)[1]] # grupo actual de la familia (asumiendo que todos son iguales)
+  possible_groups <- setdiff(common_groups, current_group)
+  if (length(possible_groups) == 0) {
+    # Si no hay otro grupo, no hay cambio
+    return(current_solution)
+  }
+  
+  new_group <- sample(possible_groups, 1)
+  
+  # Crear nueva solución
+  new_solution <- current_solution
+  new_solution[fam_rows] <- new_group
+  return(new_solution)
+}
 
-# A partir de aquí, el flujo es el mismo que antes.
-pareto_front <- result$value
+# Preparar solución inicial (obtenida con la heurística previa)
+current_solution <- initial_solution # Vector con asignaciones de grupo por estudiante
+current_score <- evaluate_solution(current_solution, data)
+best_solution <- current_solution
+best_score <- current_score
 
-# Seleccionar y graficar una solución, etc.
+for (iter in 1:max_iter) {
+  neighbor <- generate_neighbor(current_solution, data, groups_per_course)
+  neighbor_score <- evaluate_solution(neighbor, data)
+  
+  if (neighbor_score > current_score) {
+    # Si la solución vecina es mejor, aceptar
+    current_solution <- neighbor
+    current_score <- neighbor_score
+  } else {
+    # Si es peor, aceptar con cierta probabilidad
+    delta <- neighbor_score - current_score
+    p <- exp(delta / T)
+    if (runif(1) < p) {
+      current_solution <- neighbor
+      current_score <- neighbor_score
+    }
+  }
+  
+  # Actualizar mejor solución
+  if (current_score > best_score) {
+    best_solution <- current_solution
+    best_score <- current_score
+  }
+  
+  # Enfriar la temperatura
+  T <- T * cooling_rate
+  print(iter)
+}
+
+cat("Mejor puntuación encontrada:", best_score, "\n")
+
+
+
+
+
+# Suponiendo que 'data' es tu dataframe original con: student_id, family_id, course, etc.
+# 'best_solution' es el vector con la asignación final de grupos obtenido del recocido simulado.
+data_final <- data
+data_final$group <- best_solution
+data_final$node <- paste(data_final$course, data_final$group, sep = "-")
+
+# 5. Reconstruir la red (edges)
+edges <- data_final %>%
+  group_by(family_id) %>%
+  filter(n() > 1) %>%
+  summarise(combinations = list(as.data.frame(t(combn(student_id, 2)))), .groups = "drop") %>%
+  unnest(combinations) %>%
+  rename(student_id1 = V1, student_id2 = V2) %>%
+  inner_join(data_final, by = c("student_id1" = "student_id")) %>%
+  inner_join(data_final, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
+  transmute(from = node_src, to = node_dst)
+
+# 6. Dataframe de nodos
+nodes <- data_final %>%
+  distinct(node, course, group) %>%
+  mutate(
+    x = as.numeric(as.factor(group)),  # posición horizontal (grupo)
+    y = as.numeric(as.factor(course)), # posición vertical (curso)
+    name = node
+  )
+
+# 7. Crear el grafo
+graph_igraph <- graph_from_data_frame(edges, vertices = nodes, directed = FALSE)
+
+# 8. Calcular componentes conexos
+comps <- components(graph_igraph)
+num_components <- comps$no
+component_sizes <- comps$csize
+variance_sizes <- if(length(component_sizes) > 1) var(component_sizes) else 0
+
+cat("Número de componentes conexos:", num_components, "\n")
+cat("Varianza de los tamaños de los componentes:", variance_sizes, "\n")
+
+# 9. Asignar componente a cada nodo
+nodes <- nodes %>%
+  mutate(component = comps$membership)
+
+num_components <- max(nodes$component)
+palette <- brewer.pal(n = min(num_components, 9), name = "Set1")
+node_colors <- palette[nodes$component]
+
+# 10. Crear el grafo con tidygraph y graficar
+graph <- tbl_graph(edges = edges, nodes = nodes, directed = FALSE)
+V(graph)$x <- nodes$x
+V(graph)$y <- nodes$y
+V(graph)$name <- nodes$node
+
+ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
+  # Dibujar autoenlaces (loops)
+  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red") +
+  # Dibujar enlaces curvos
+  geom_edge_arc(aes(alpha = 0.5), show.legend = FALSE, color = "grey") +  
+  # Dibujar nodos
+  geom_node_point(aes(color = as.factor(component)), size = 4) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+  scale_color_manual(values = palette) +
+  scale_y_continuous(
+    breaks = seq(floor(min(V(graph)$y)), ceiling(max(V(graph)$y)), by = 1)
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank()
+  ) +
+  labs(
+    title = "Red con la Solución Final Encontrada utilizando Simulated Annealing",
+    x = "Grupo",
+    y = "Curso",
+    color = "Componente"
+  ) +
+  coord_fixed()
+
+
+
+##################################################
+#########Heuristic mas SA##########################
+#SA mejorado con búsqueda local
+################################################
+
+
+# Parámetros
+L <- 10
+Tf <- 0.01
+T0 <- 0.4 * initial_score
+T <- T0
+
+cooling_rate <- 0.9 
+
+alpha <- 0.005
+
+evaluate_solution <- function(solution, data, alpha) {
+  data_eval <- data
+  data_eval$group <- solution
+  data_eval$node <- paste(data_eval$course, data_eval$group, sep = "-")
+  
+  edges <- data_eval %>%
+    group_by(family_id) %>%
+    filter(n() > 1) %>%
+    summarise(combinations = list(as.data.frame(t(combn(student_id, 2)))), .groups = "drop") %>%
+    unnest(combinations) %>%
+    rename(student_id1 = V1, student_id2 = V2) %>%
+    inner_join(data_eval, by = c("student_id1" = "student_id")) %>%
+    inner_join(data_eval, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
+    transmute(from = node_src, to = node_dst)
+  
+  nodes <- data_eval %>%
+    distinct(node)
+  
+  graph <- graph_from_data_frame(d = edges, vertices = nodes, directed = FALSE)
+  
+  if (ecount(graph) == 0 || vcount(graph) == 0) {
+    return(-Inf)  # Si no hay grafo, puntaje muy bajo
+  }
+  
+  comps <- components(graph)
+  num_components <- comps$no
+  component_sizes <- comps$csize
+  variance_sizes <- if (length(component_sizes) < 2) 0 else var(component_sizes, na.rm = TRUE)
+  
+  
+  return(num_components - alpha * variance_sizes)
+}
+
+generate_neighbor <- function(current_solution, data, groups_per_course) {
+  # Seleccionar una familia al azar
+  fam_ids <- unique(data$family_id)
+  selected_fam <- sample(fam_ids, 1)
+  
+  # Subset de la familia seleccionada
+  fam_rows <- data$family_id == selected_fam
+  
+  # Obtener cursos de la familia
+  fam_courses <- unique(data$course[fam_rows])
+  
+  # Obtener la intersección de grupos disponibles para esos cursos
+  group_lists <- lapply(fam_courses, function(cc) groups_per_course[[as.character(cc)]])
+  common_groups <- Reduce(intersect, group_lists)
+  
+  # Si no hay intersección, tomar un grupo del primer curso de la familia
+  if (length(common_groups) == 0) {
+    common_groups <- groups_per_course[[as.character(fam_courses[1])]]
+  }
+  
+  # Elegir un grupo distinto al actual (si posible)
+  current_group <- current_solution[which(fam_rows)[1]]
+  possible_groups <- setdiff(common_groups, current_group)
+  if (length(possible_groups) == 0) {
+    # Si no hay otro grupo, no hay cambio
+    return(current_solution)
+  }
+  
+  new_group <- sample(possible_groups, 1)
+  
+  # Crear nueva solución
+  new_solution <- current_solution
+  new_solution[fam_rows] <- new_group
+  return(new_solution)
+}
+
+
+
+
+
+local_search_first_best <- function(solution, data, groups_per_course, alpha) {
+  current_solution <- solution
+  current_score <- evaluate_solution(current_solution, data, alpha)
+  
+  families <- unique(data$family_id)
+  
+  improved <- TRUE
+  while (improved) {
+    improved <- FALSE
+    # Recorremos exhaustivamente todas las familias
+    for (fam in families) {
+      fam_rows <- data$family_id == fam
+      fam_courses <- unique(data$course[fam_rows])
+      
+      # Obtener intersección de grupos para esos cursos
+      group_lists <- lapply(fam_courses, function(cc) groups_per_course[[as.character(cc)]])
+      common_groups <- Reduce(intersect, group_lists)
+      
+      # Grupo actual de esta familia
+      current_group <- current_solution[which(fam_rows)[1]]
+      
+      # Probar todos los grupos diferentes al actual
+      candidate_groups <- setdiff(common_groups, current_group)
+      
+      found_improvement <- FALSE
+      for (g in candidate_groups) {
+        neighbor_solution <- current_solution
+        neighbor_solution[fam_rows] <- g
+        neighbor_score <- evaluate_solution(neighbor_solution, data, alpha)
+        
+        if (neighbor_score > current_score) {
+          # Primera mejora encontrada, actualizamos y volvemos a comenzar
+          current_solution <- neighbor_solution
+          current_score <- neighbor_score
+          improved <- TRUE
+          found_improvement <- TRUE
+          break
+        }
+      }
+      
+      # Si se encontró una mejora, salir del bucle para reiniciar el proceso desde la primera familia
+      if (found_improvement) break
+    }
+  }
+  
+  return(current_solution)
+}
+
+
+# Asumimos que initial_solution, data y groups_per_course están disponibles
+initial_score <- evaluate_solution(initial_solution, data, alpha)
+
+
+current_solution <- initial_solution
+current_score <- initial_score
+best_solution <- current_solution
+best_score <- current_score
+
+# Recocido Simulado
+while (T > Tf) {
+  for (count in 1:L) {
+    neighbor <- generate_neighbor(current_solution, data, groups_per_course)
+    neighbor_score <- evaluate_solution(neighbor, data, alpha)
+    
+    delta <- neighbor_score - current_score
+    # Aceptación
+    if (delta < 0) {
+      # Si es peor, se acepta con probabilidad e^(-delta/T)
+      if (runif(1) < exp(delta / T)) {
+        current_solution <- neighbor
+        current_score <- neighbor_score
+      }
+    } else {
+      # Si es mejor, se acepta siempre
+      current_solution <- neighbor
+      current_score <- neighbor_score
+    }
+    
+    # Actualizar mejor solución
+    if (current_score > best_score) {
+      best_solution <- current_solution
+      best_score <- current_score
+    }
+  }
+  
+  # Enfriamiento
+  T <- T * cooling_rate
+  print(T)
+}
+
+# Búsqueda Local post-recocido (First-Best Improvement)
+best_solution <- local_search_first_best(best_solution, data, groups_per_course, alpha)
+best_score <- evaluate_solution(best_solution, data, alpha)
+
+cat("Mejor puntuación encontrada:", best_score, "\n")
+
+# Reconstruir datos finales
+data_final <- data
+data_final$group <- best_solution
+data_final$node <- paste(data_final$course, data_final$group, sep = "-")
+
+edges <- data_final %>%
+  group_by(family_id) %>%
+  filter(n() > 1) %>%
+  summarise(combinations = list(as.data.frame(t(combn(student_id, 2)))), .groups = "drop") %>%
+  unnest(combinations) %>%
+  rename(student_id1 = V1, student_id2 = V2) %>%
+  inner_join(data_final, by = c("student_id1" = "student_id")) %>%
+  inner_join(data_final, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
+  transmute(from = node_src, to = node_dst)
+
+nodes <- data_final %>%
+  distinct(node, course, group) %>%
+  mutate(
+    x = as.numeric(as.factor(group)),
+    y = as.numeric(as.factor(course)),
+    name = node
+  )
+
+graph_igraph <- graph_from_data_frame(edges, vertices = nodes, directed = FALSE)
+comps <- components(graph_igraph)
+num_components <- comps$no
+component_sizes <- comps$csize
+variance_sizes <- if(length(component_sizes) > 1) var(component_sizes) else 0
+
+cat("Número de componentes conexos:", num_components, "\n")
+cat("Varianza de los tamaños de los componentes:", variance_sizes, "\n")
+
+nodes <- nodes %>%
+  mutate(component = comps$membership)
+
+num_components <- max(nodes$component)
+
+if (num_components <= 9) {
+  palette <- brewer.pal(n = num_components, name = "Set1")
+} else {
+  # Generar una paleta más grande usando, por ejemplo, colorRampPalette
+  # Aquí tomamos Set1 como base y expandimos. Puedes usar cualquier otra paleta base.
+  base_colors <- brewer.pal(n = 9, name = "Set1")
+  # Generar una paleta de num_components colores interpolando la existente
+  palette <- colorRampPalette(base_colors)(num_components)
+}
+
+
+
+graph <- tbl_graph(edges = edges, nodes = nodes, directed = FALSE)
+V(graph)$x <- nodes$x
+V(graph)$y <- nodes$y
+V(graph)$name <- nodes$node
+
+ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
+  geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red") +
+  geom_edge_arc(aes(alpha = 0.5), show.legend = FALSE, color = "grey") +  
+  geom_node_point(aes(color = as.factor(component)), size = 4) +
+  geom_node_text(aes(label = name), repel = TRUE, size = 3) +
+  scale_color_manual(values = palette) +
+  scale_y_continuous(
+    breaks = seq(floor(min(V(graph)$y)), ceiling(max(V(graph)$y)), by = 1)
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_blank(),
+    axis.line = element_blank()
+  ) +
+  labs(
+    title = "Red con la Solución Final (Recocido + Búsqueda Local)",
+    x = "Grupo",
+    y = "Curso",
+    color = "Componente"
+  ) +
+  coord_fixed()
+
+write_xlsx(data_final, "solucion_final.xlsx")
+
+
+###########################Nivelación
+
+
+
+

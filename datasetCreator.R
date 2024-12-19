@@ -1,4 +1,5 @@
 library(tidyverse)
+library(ggplot2)
 
 # Input parameters.
 num_groups <- 3          # Number of groups per course
@@ -134,4 +135,56 @@ for (num_groups in num_groups_list) {
     }
   }
 }
+
+
+
+
+##############################
+
+# Valores de lambda para la distribución Poisson
+lambda_values <- c(0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2.0)
+
+# Número de simulaciones por cada lambda
+n_simulations <- 10000
+
+# Crear un data frame para almacenar los resultados
+distribution_data <- data.frame(
+  family_size = integer(),
+  lambda = numeric()
+)
+
+# Generar tamaños de familia para cada lambda
+for (lambda in lambda_values) {
+  family_sizes <- rpois(n_simulations, lambda) + 1
+  temp_data <- data.frame(
+    family_size = family_sizes,
+    lambda = as.factor(lambda)
+  )
+  distribution_data <- rbind(distribution_data, temp_data)
+}
+
+# Calcular frecuencias relativas para representar PMF
+pmf_data <- distribution_data %>%
+  group_by(lambda, family_size) %>%
+  summarise(frequency = n() / n_simulations, .groups = 'drop')
+
+# Graficar las distribuciones como líneas y puntos
+plot <- ggplot(pmf_data, aes(x = family_size, y = frequency, color = lambda, group = lambda)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = seq(0, max(pmf_data$family_size), by = 1), expand = c(0, 0)) +
+  labs(
+    title = "Family Size Distribution for Different Lambda Values",
+    x = "P(X = k | \u03bb) + 1",
+    y = "Relative Frequency",
+    color = "Lambda"
+  ) +
+  theme_minimal()
+
+# Guardar el gráfico en PDF y JPG
+ggsave("results/family_size_distribution.pdf", plot, width = 8, height = 6)
+ggsave("results/family_size_distribution.jpg", plot, width = 8, height = 6)
+
+# Mostrar el gráfico
+print(plot)
 
