@@ -74,4 +74,4 @@ If you use this code or data in your research, please cite:
 Paper under review
 
 ## License
-This project is released under the MIT License.
+This project is released under the [MIT License](LICENSE).
