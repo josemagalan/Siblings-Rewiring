@@ -1,0 +1,8 @@
+Friedman Test for Number of Components:
+
+
+	Friedman rank sum test
+
+data:  as.matrix(wide_data[, -1])
+Friedman chi-squared = 324.73, df = 2, p-value < 2.2e-16
+

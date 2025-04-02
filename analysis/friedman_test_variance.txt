@@ -1,0 +1,8 @@
+Friedman Test for Variance of Component Sizes:
+
+
+	Friedman rank sum test
+
+data:  as.matrix(wide_data_var[, -1])
+Friedman chi-squared = 31.4, df = 2, p-value = 1.519e-07
+
