@@ -1,3 +1,4 @@
+# Load required libraries
 library(tidyverse)
 library(igraph)
 library(tidygraph)
@@ -5,16 +6,18 @@ library(ggraph)
 library(mco)
 library(RColorBrewer)
 library(writexl)
+
+# Load external function definitions
 source("graphFigures.R")
 source("nivelacion.R")
 
-# Crear la carpeta results si no existe
+# Create the output folder if it doesn't exist
 dir.create("results", showWarnings = FALSE)
 
-# Listar todos los archivos en datasets con formato ds_*.csv
+# List all dataset files starting with 'ds_'
 files <- list.files("datasets", pattern = "^ds_.*\\.csv$", full.names = TRUE)
 
-# Dataframe para almacenar resultados
+# Initialize results data frame
 results <- tibble(
   filename = character(),
   groups = double(),
@@ -23,46 +26,39 @@ results <- tibble(
   poisson_param = double(),
   seed = double(),
   n_components_initial = double(),
-  var_components_initial = double(), # Varianza inicial
+  var_components_initial = double(),
   n_components_bubble = double(),
-  var_components_bubble = double(),  # Varianza burbuja
+  var_components_bubble = double(),
   n_components_heuristic = double(),
-  n_components_heuristic_balanced=double(),
-  var_components_heuristic_balanced = double(),  # Varianza burbuja
+  n_components_heuristic_balanced = double(),
+  var_components_heuristic_balanced = double(),
   max_students_heuristic = double(),
-  max_students_balanced = double()# Uso max_students_heuristic
+  max_students_balanced = double()
 )
 
-
-
+# Iterate over all dataset files
 for (file in files) {
   file_name <- basename(file)
   
-  # Extraer los parámetros desde el nombre del archivo
+  # Extract parameters from file name
   params_str <- str_remove(file_name, "\\.csv$")
   parts <- str_split(params_str, "_", simplify = TRUE)
-  # parts[1] = "ds"
-  # parts[2] = numero de grupos
-  # parts[3] = alumnos por grupo
-  # parts[4] = numero de cursos
-  # parts[5] = parametro Poisson
-  # parts[6] = semilla
   groups <- parts[2] %>% as.numeric()
   students_per_group <- parts[3] %>% as.numeric()
   courses <- parts[4] %>% as.numeric()
   poisson_param <- parts[5] %>% as.numeric()
   seed <- parts[6] %>% as.numeric()
   
-  data <- read_csv(file,col_types = cols(
-    sibling_ids = col_character() # Forzar el campo a ser texto
-  ))
+  # Read CSV file
+  data <- read_csv(file, col_types = cols(sibling_ids = col_character()))
   
-  ######################
-  # Asignación Inicial #
-  ######################
+  ##############################
+  # Initial Assignment Analysis
+  ##############################
   data_initial <- data %>% 
     mutate(node = paste(course, group, sep = "-"))
   
+  # Create edges between students in the same family
   edges_initial <- data_initial %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -81,35 +77,30 @@ for (file in files) {
       name = node
     )
   
+  # Build graph
   graph_initial <- tbl_graph(edges = edges_initial, nodes = nodes_initial, directed = FALSE)
   V(graph_initial)$x <- nodes_initial$x
   V(graph_initial)$y <- nodes_initial$y
   V(graph_initial)$name <- nodes_initial$node
   
+  # Compute number of components and their variance
   n_components_initial <- components(as.igraph(graph_initial))$no
   comp_initial <- components(as.igraph(graph_initial))
-  
-  # Tamaños de los componentes iniciales
   component_sizes_initial <- comp_initial$csize
+  var_components_initial <- if (n_components_initial > 1) var(component_sizes_initial) else 0
   
-  # Varianza del tamaño de los componentes iniciales (0 si sólo hay uno)
-  var_components_initial <- if (n_components_initial > 1) {
-    var(component_sizes_initial)
-  } else {
-    0
-  }
-  
+  # Plot and save initial assignment
   plot_initial <- crear_y_graficar_grafo(graph_initial, "Initial assignment")
-  # Guardar en JPG y PDF
   ggsave(filename = file.path("results", paste0(params_str, "_initial.jpg")), plot = plot_initial, width = 8, height = 6)
   ggsave(filename = file.path("results", paste0(params_str, "_initial.pdf")), plot = plot_initial, width = 8, height = 6)
   
-  ##########################
-  # Burbuja Estándar       #
-  ##########################
-  data_bubble <- data %>% 
+  ##############################
+  # Standard Bubble Assignment
+  ##############################
+  data_bubble <- data %>%
     mutate(node = paste(course, group, sep = "-"))
   
+  # Create edges: stronger links for siblings in same course but different groups
   edges_bubble <- data_bubble %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -135,6 +126,7 @@ for (file in files) {
       name = node
     )
   
+  # Build bubble graph
   graph_bubble <- tbl_graph(edges = edges_bubble, nodes = nodes_bubble, directed = FALSE)
   V(graph_bubble)$x <- nodes_bubble$x
   V(graph_bubble)$y <- nodes_bubble$y
@@ -142,26 +134,18 @@ for (file in files) {
   
   n_components_bubble <- components(as.igraph(graph_bubble))$no
   comp_bubble <- components(as.igraph(graph_bubble))
-  
-  # Tamaños de los componentes burbuja
   component_sizes_bubble <- comp_bubble$csize
+  var_components_bubble <- if (n_components_bubble > 1) var(component_sizes_bubble) else 0
   
-  # Varianza del tamaño de los componentes burbuja (0 si sólo hay uno)
-  var_components_bubble <- if (n_components_bubble > 1) {
-    var(component_sizes_bubble)
-  } else {
-    0
-  }
-  
+  # Plot and save
   plot_bubble <- crear_y_graficar_grafo(graph_bubble, "Standard bubble")
   ggsave(filename = file.path("results", paste0(params_str, "_bubble.jpg")), plot = plot_bubble, width = 8, height = 6)
   ggsave(filename = file.path("results", paste0(params_str, "_bubble.pdf")), plot = plot_bubble, width = 8, height = 6)
   
-  ##########################
-  # Asignación Heurística #
-  ##########################
-  
-  # Determinamos grupos por curso a partir de los datos
+  ##############################
+  # Heuristic Assignment
+  ##############################
+  # Determine available groups per course
   groups_per_course <- data_bubble %>%
     group_by(course) %>%
     summarise(groups_avail = list(unique(group)), .groups = "drop") %>%
@@ -171,6 +155,7 @@ for (file in files) {
     group_by(family_id) %>%
     summarise(courses = list(unique(course)), .groups = "drop")
   
+  # Assign group to families considering shared availability
   families_groups <- families_courses %>%
     mutate(
       common_groups = map(courses, ~ {
@@ -190,6 +175,7 @@ for (file in files) {
     ) %>%
     ungroup()
   
+  # Apply heuristic group assignment to data
   data_assigned <- data_bubble %>%
     left_join(families_groups %>% select(family_id, assigned_group), by = "family_id") %>%
     mutate(
@@ -198,6 +184,7 @@ for (file in files) {
     ) %>%
     select(-assigned_group)
   
+  # Build graph from heuristic assignment
   edges_heuristic <- data_assigned %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -217,45 +204,37 @@ for (file in files) {
     )
   
   graph_heuristic <- graph_from_data_frame(edges_heuristic, vertices = nodes_heuristic, directed = FALSE)
-  
   n_components_heuristic <- components(graph_heuristic)$no
   
-  # Filtrar solo alumnos con hermanos (familias con más de un estudiante)
+  # Compute maximum group size for students with siblings
   data_assigned_siblings <- data_assigned %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
     ungroup()
   
-  # Calcular el máximo número de alumnos asignados a un grupo y curso
-  # considerando solo alumnos con hermanos.
   max_students <- data_assigned_siblings %>%
     group_by(course, group) %>%
     summarise(n_students = n(), .groups = "drop") %>%
     pull(n_students) %>%
-    max(., na.rm = TRUE) # Se usa na.rm=TRUE por si no hay nodos con hermanos
+    max(., na.rm = TRUE)
   
+  # Plot and save heuristic assignment
   plot_heuristic <- crear_y_graficar_grafo(graph_heuristic, "Allocation obtained using the heuristic algorithm")
   ggsave(filename = file.path("results", paste0(params_str, "_heuristic.jpg")), plot = plot_heuristic, width = 8, height = 6)
   ggsave(filename = file.path("results", paste0(params_str, "_heuristic.pdf")), plot = plot_heuristic, width = 8, height = 6)
   
-
-  
-  
-  ##########################
-  # Nivelación de la solución heurística #
-  ##########################
-  
-  
-  datosNivelados<-Ajustar_Exacto_Nivelacion(data_assigned)
-  datosNivelados <- datosNivelados %>% 
+  ##############################
+  # Balanced Heuristic Assignment
+  ##############################
+  datosNivelados <- Ajustar_Exacto_Nivelacion(data_assigned)
+  datosNivelados <- datosNivelados %>%
     mutate(node = paste(course, group, sep = "-"))
   
-  
-  # Guardar dataframe datosNivelados como RDS
+  # Save leveled assignment as RDS and CSV
   saveRDS(datosNivelados, file.path("results", paste0(params_str, "_datosNivelados.rds")))
-  # Guardar dataframe datosNivelados
   write_csv(datosNivelados, file.path("results", paste0(params_str, "_datosNivelados.csv")))
   
+  # Build graph from leveled assignment
   edges_heuristic_balanced <- datosNivelados %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -275,41 +254,30 @@ for (file in files) {
     )
   
   graph_heuristic_balanced <- graph_from_data_frame(edges_heuristic_balanced, vertices = nodes_heuristic_balanced, directed = FALSE)
-  
   components_heuristic_balanced <- components(graph_heuristic_balanced)
+  n_components_heuristic_balanced <- components_heuristic_balanced$no
   
-  n_components_heuristic_balanced <- components(graph_heuristic_balanced)$no
-  
-  # Tamaños de los componentes burbuja
   component_sizes_heuristic_balanced <- components_heuristic_balanced$csize
+  var_components_heuristic_balanced <- if (n_components_heuristic_balanced > 1) var(component_sizes_heuristic_balanced) else 0
   
-
-  # Varianza del tamaño de los componentes burbuja (0 si sólo hay uno)
-  var_components_heuristic_balanced <- if (n_components_heuristic_balanced > 1) {
-    var(component_sizes_heuristic_balanced)
-  } else {
-    0
-  }
-  
-  # Filtrar solo alumnos con hermanos (familias con más de un estudiante)
+  # Compute max students per group after balancing
   data_assigned_siblings <- datosNivelados %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
     ungroup()
   
-  # Calcular el máximo número de alumnos asignados a un grupo y curso
-  # considerando solo alumnos con hermanos.
   max_students_balanced <- data_assigned_siblings %>%
     group_by(course, group) %>%
     summarise(n_students = n(), .groups = "drop") %>%
     pull(n_students) %>%
-    max(., na.rm = TRUE) # Se usa na.rm=TRUE por si no hay nodos con hermanos
+    max(., na.rm = TRUE)
   
+  # Plot and save leveled assignment
   plot_heuristic <- crear_y_graficar_grafo(graph_heuristic_balanced, "Allocation obtained using the heuristic algorithm and greedy balancing")
   ggsave(filename = file.path("results", paste0(params_str, "_heuristic_balanced.jpg")), plot = plot_heuristic, width = 8, height = 6)
   ggsave(filename = file.path("results", paste0(params_str, "_heuristic_balanced.pdf")), plot = plot_heuristic, width = 8, height = 6)
   
-  # Agregar resultados a la tabla
+  # Append row to results table
   results <- results %>%
     add_row(
       filename = file_name,
@@ -323,28 +291,26 @@ for (file in files) {
       n_components_bubble = n_components_bubble,
       var_components_bubble = var_components_bubble,
       n_components_heuristic = n_components_heuristic,
-      n_components_heuristic_balanced= n_components_heuristic_balanced,
+      n_components_heuristic_balanced = n_components_heuristic_balanced,
       var_components_heuristic_balanced = var_components_heuristic_balanced,
       max_students_heuristic = max_students,
       max_students_balanced = max_students_balanced
     )
-  
-  
-  
-  
 }
 
-# Guardar el resumen de resultados
+# Save summary of results
 write_csv(results, "results/results_summary.csv")
 
 
 #####################################################################
+# Aggregate and visualize the summary of experimental results
+#####################################################################
 
-
-# Leer el archivo results_summary.csv
+# Read the summary CSV with all experiment results
 results <- read_csv("results/results_summary.csv")
 
-# Calcular la media y varianza de los componentes por estrategia y agrupados por poisson_param y groups
+# Compute mean and variance of components per strategy,
+# grouped by Poisson parameter and number of groups
 grouped <- results %>%
   group_by(poisson_param, groups) %>%
   summarise(
@@ -358,7 +324,7 @@ grouped <- results %>%
     .groups = "drop"
   )
 
-# Preparar datos en formato largo para las estrategias
+# Convert the data to long format for easier plotting
 data_long <- grouped %>%
   pivot_longer(
     cols = c(mean_initial, mean_bubble, mean_heuristic),
@@ -373,17 +339,16 @@ data_long <- grouped %>%
     )
   )
 
-# Etiquetas personalizadas para las estrategias
+# Define custom labels for plotting
 strategy_labels <- c(
   mean_initial = "Mean initial strategy",
   mean_bubble = "Mean bubble strategy",
   mean_heuristic = "Mean heuristic strategy"
 )
 
-
-# Crear el gráfico
+# Create the combined plot
 my_plot <- ggplot() +
-  # Gráfico de componentes medios con ajuste loess para intervalos de confianza
+  # Smoothed trend of average components with confidence bands
   geom_smooth(
     data = data_long,
     aes(x = poisson_param, y = mean_components, color = strategy, fill = strategy),
@@ -392,7 +357,7 @@ my_plot <- ggplot() +
     alpha = 0.2
   ) +
   
-  # Gráfico de max_students_heuristic (eje derecho)
+  # Add points for max students in heuristic solution (rescaled)
   geom_point(data = grouped, aes(x = poisson_param, y = mean_max_students_heuristic / 5), color = "purple", size = 2) +
   geom_smooth(
     data = grouped,
@@ -402,17 +367,17 @@ my_plot <- ggplot() +
     se = TRUE
   ) +
   
-  # Escala secundaria en el eje derecho
+  # Set primary and secondary y-axes
   scale_y_continuous(
     name = "Average Components",
-    limits = c(0, 7),  # Límites del eje izquierdo
-    sec.axis = sec_axis(~ . * 5, name = "Max Students (Heuristic)", breaks = seq(0, 30, 5)) # Límites del eje derecho
+    limits = c(0, 7),
+    sec.axis = sec_axis(~ . * 5, name = "Max Students (Heuristic)", breaks = seq(0, 30, 5))
   ) +
   
-  # Línea horizontal en el eje derecho (convertida a escala secundaria)
+  # Add dashed reference line for the target max group size (20 students)
   geom_hline(yintercept = 20 / 5, linetype = "dashed", color = "red") +
   
-  # Etiquetas personalizadas en la leyenda
+  # Customize legend labels
   scale_color_manual(
     values = c("mean_initial" = "blue", "mean_bubble" = "green", "mean_heuristic" = "orange"),
     labels = strategy_labels
@@ -422,33 +387,24 @@ my_plot <- ggplot() +
     labels = strategy_labels
   ) +
   
-  # Segmentación por groups
+  # Create facets by number of groups
   facet_wrap(~groups, scales = "fixed", ncol = 1) +
   
-  # Etiquetas
+  # Add titles and axis labels
   labs(
     title = "Average Components and Maximum Assigned Students",
     x = "Lambda (Poisson distribution)",
     color = "Strategy",
-    fill = "Strategy",
+    fill = "Strategy"
   ) +
   
-  # Tema
+  # Apply a minimal theme
   theme_minimal() +
   theme(
     legend.position = "bottom",
     strip.text = element_text(size = 12, face = "bold")
   )
 
-# Exportar el gráfico en PDF
+# Export plot to PDF and JPG
 ggsave("results/Average_Components_and_Max_Students.pdf", plot = my_plot, device = "pdf", width = 8, height = 10)
-
-# Exportar el gráfico en JPG
 ggsave("results/Average_Components_and_Max_Students.jpg", plot = my_plot, device = "jpeg", width = 8, height = 10, dpi = 300)
-
-
-
-
-
-
-
