@@ -8,67 +8,64 @@ library(tidygraph)
 
 source("GA_functions.R")
 
-# Configuración de SLURM: Cada tarea procesa UN archivo
-task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = 1))  # ID del archivo
-input_dir <- "datasets/"
-output_dir <- "results/final_solutions_GA"
-output_csv <- paste0("results/GA/experiment_results_GA_", task_id, ".csv")
+# SLURM configuration: Each task processes ONE file
+task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = 1))  # Task ID = index of the file to process
+input_dir <- "datasets/"                                             # Directory with input datasets
+output_dir <- "results/final_solutions_GA"                           # Output directory for final RDS solutions
+output_csv <- paste0("results/GA/experiment_results_GA_", task_id, ".csv")  # Summary CSV for the task
 
+# Create output directory if it doesn't exist
 dir.create(output_dir, showWarnings = FALSE)
 
-
-# Obtener lista de archivos
+# Get the list of available files
 files <- list.files(input_dir, pattern = ".csv", full.names = TRUE)
+
+# Exit if task_id exceeds number of available files
 if (task_id > length(files)) {
-  cat("ID fuera de rango, terminando ejecución.\n")
+  cat("Task ID out of range, exiting execution.\n")
   quit()
 }
+
 file <- files[task_id]
 
-# Extraer parámetros del nombre del archivo
+# Extract parameters encoded in the filename
 extraer_parametros <- function(filename) {
   nombre <- basename(filename)
   partes <- strsplit(nombre, "_")[[1]]
   list(
-    grupos = as.numeric(partes[2]),
-    alumnos = as.numeric(partes[3]),
-    cursos = as.numeric(partes[4]),
-    poison = as.numeric(partes[5]),
-    semilla = gsub("\\.csv$", "", partes[6])
+    grupos = as.numeric(partes[2]),                         # Number of groups
+    alumnos = as.numeric(partes[3]),                        # Number of students
+    cursos = as.numeric(partes[4]),                         # Number of courses
+    poison = as.numeric(partes[5]),                         # Noise level
+    semilla = gsub("\\.csv$", "", partes[6])                # Random seed (from filename)
   )
 }
 
 params <- extraer_parametros(file)
-cat(sprintf("Procesando archivo: %s\n", file))
+cat(sprintf("Processing file: %s\n", file))
 
-
+# Initialize result list
 resultados <- list()
-
-
-
 
 archivo <- file
 
-
-# Extraer el número máximo de grupos y el tamaño máximo del grupo
+# Extract maximum number of groups and max group size from filename parameters
 max_grupos <- params$grupos
 max_grupo_size <- params$alumnos
 
+# Read the input dataset
 datos <- readr::read_csv(archivo,
                          col_types = cols(sibling_ids = col_character())) %>% 
-  mutate(node = paste(course, group, sep = "-"))
+  mutate(node = paste(course, group, sep = "-"))  # Add node identifier
 
+# Genetic algorithm hyperparameters
+pop_size = 50               # Population size
+num_generations = 1000      # Number of generations
+p_mut = 0.1                 # Mutation probability
+p_familia = 0.5             # Probability of using family-based mutation
+p_cross = 0.2               # Crossover probability
 
-pop_size = 50
-num_generations = 1000 
-p_mut = 0.1 
-p_familia = 0.5 
-p_cross = 0.2
-
-
-
-
-# Ejecutar NSGA-II
+# Execute the NSGA-II algorithm
 resultados <- nsga2(datos, 
                     pop_size = pop_size, 
                     num_generations = num_generations, 
@@ -78,36 +75,36 @@ resultados <- nsga2(datos,
                     p_familia = p_familia, 
                     p_cross = p_cross)
 
-# Extraer la evaluación final y la población final
+# Extract final population and evaluations
 final_evals <- resultados$evaluaciones
 final_poblacion <- resultados$poblacion
 
-# Extraer el frente de Pareto final
+# Extract the final Pareto front
 pareto_front_indices <- fast_non_dominated_sort(final_evals)[[1]]
 pareto_front <- final_evals[pareto_front_indices, ]
 
+# ======================== FINAL BLOCK ========================
 
-# ======================== BLOQUE FINAL ADAPTADO ========================
-# Crear lista para almacenar los resultados por solución
+# Create list to store solution metrics
 resultados <- list()
 
-# Obtener los índices del frente de Pareto
+# Display number of solutions on the Pareto front
 pareto_front_indices <- fast_non_dominated_sort(final_evals)[[1]]
-cat("Número de soluciones en el frente de Pareto:", length(pareto_front_indices), "\n")
+cat("Number of solutions in the Pareto front:", length(pareto_front_indices), "\n")
 
-# Procesar cada solución del frente de Pareto
+# Process each Pareto-optimal solution
 for (i in seq_along(pareto_front_indices)) {
   idx <- pareto_front_indices[i]
   solucion <- final_poblacion[[idx]]
   
-  # Evaluar solución con la función existente (ya calcula componentes y varianza)
+  # Evaluate the solution (e.g., number of components and size variance)
   evaluacion <- evaluar_solucion(solucion)
   
-  # Guardar solución como archivo .rds
+  # Save the solution to an RDS file
   nombre_rds <- paste0(output_dir, "/", tools::file_path_sans_ext(basename(file)), "_pareto_", i, ".rds")
   saveRDS(solucion, nombre_rds)
   
-  # Guardar resultado en la lista
+  # Store metadata and evaluation in the result list
   resultados[[i]] <- tibble(
     archivo = basename(file),
     grupos = params$grupos,
@@ -121,10 +118,10 @@ for (i in seq_along(pareto_front_indices)) {
   )
 }
 
-# Combinar todos los resultados y guardar en CSV
+# Combine all records and export to CSV
 final_df <- bind_rows(resultados)
 write_csv(final_df, output_csv)
 
-cat("Finalizado archivo", basename(file), "\n")
-cat("Número de soluciones en el frente de Pareto:", nrow(final_df), "\n")
-cat("Resultados guardados en", output_csv, "\n")
+cat("Finished processing", basename(file), "\n")
+cat("Number of solutions in the Pareto front:", nrow(final_df), "\n")
+cat("Results saved to", output_csv, "\n")

@@ -1,3 +1,4 @@
+# Load required libraries
 library(dplyr)
 library(tidyr)
 library(readr)
@@ -6,56 +7,64 @@ library(stringr)
 library(igraph)
 library(tidygraph)
 
+# Load custom Simulated Annealing functions and utilities
 source("SAfunctions.R")
 
-# Configuración de SLURM: Cada tarea procesa UN archivo
-task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = 1))  # ID del archivo
-input_dir <- "results/"
-output_dir <- "results/final_solutions"
-output_csv <- paste0("results/experiment_results_", task_id, ".csv")
+# SLURM configuration: Each array task processes ONE input file
+task_id <- as.numeric(Sys.getenv("SLURM_ARRAY_TASK_ID", unset = 1))  # Get task ID from environment
+input_dir <- "results/"                  # Directory containing input .rds files
+output_dir <- "results/final_solutions"  # Directory to store final solutions
+output_csv <- paste0("results/experiment_results_", task_id, ".csv")  # Output file for results summary
 
+# Create output directory if it doesn't already exist
 dir.create(output_dir, showWarnings = FALSE)
 
-# Parámetros
-max_iter <- 10000
-Tf <- 0.01
-perc <- 0.01
-pesos <- seq(0, 1, by = 0.1)
+# Algorithm parameters
+max_iter <- 10000                  # Maximum iterations for Simulated Annealing
+Tf <- 0.01                         # Final temperature (currently unused)
+perc <- 0.01                       # Percentage of neighborhood evaluated in local search
+pesos <- seq(0, 1, by = 0.1)       # Range of weight combinations (for multi-objective fitness function)
 
-# Obtener lista de archivos
+# Get the list of input files
 files <- list.files(input_dir, pattern = "_datosNivelados.rds", full.names = TRUE)
+
+# Check if task_id is within valid range
 if (task_id > length(files)) {
-  cat("ID fuera de rango, terminando ejecución.\n")
+  cat("Task ID out of range, terminating execution.\n")
   quit()
 }
+
+# Select the input file for this task
 file <- files[task_id]
 
-# Extraer parámetros del nombre del archivo
-extraer_parametros <- function(filename) {
-  nombre <- basename(filename)
-  partes <- strsplit(nombre, "_")[[1]]
+# Extract metadata (number of groups, students, courses, etc.) from the filename
+extract_parameters <- function(filename) {
+  name <- basename(filename)
+  parts <- strsplit(name, "_")[[1]]
   list(
-    grupos = as.numeric(partes[2]),
-    alumnos = as.numeric(partes[3]),
-    cursos = as.numeric(partes[4]),
-    poison = as.numeric(partes[5]),
-    semilla = as.numeric(partes[6])
+    grupos = as.numeric(parts[2]),     # Number of groups
+    alumnos = as.numeric(parts[3]),    # Number of students
+    cursos = as.numeric(parts[4]),     # Number of courses
+    poison = as.numeric(parts[5]),     # Noise/randomness parameter
+    semilla = as.numeric(parts[6])     # Random seed
   )
 }
 
-params <- extraer_parametros(file)
-cat(sprintf("Procesando archivo: %s\n", file))
+params <- extract_parameters(file)
+cat(sprintf("Processing file: %s\n", file))
 
+# Load data
 datos_nivelados <- readRDS(file)
-resultados <- list()
+results <- list()
 
+# Iterate over all weight combinations
 for (i in seq_along(pesos)) {
   w1 <- pesos[i]
   w2 <- 1 - w1
   
-  set.seed(params$semilla)
+  set.seed(params$semilla)  # Ensure reproducibility for each run
   
-  # Ejecutar Recocido Simulado
+  # Run Simulated Annealing
   sa_result <- simulated_annealing(
     datos_inicial = datos_nivelados,
     w1 = w1,
@@ -63,11 +72,11 @@ for (i in seq_along(pesos)) {
     max_iter = max_iter
   )
   
-  # Evaluar solución inicial y final
+  # Evaluate initial and final graph solutions
   res_inicial <- construir_grafo_y_componentes(datos_nivelados)
   res_final <- construir_grafo_y_componentes(sa_result$best_solution)
   
-  # Ejecutar Búsqueda Local
+  # Run Local Search for further refinement
   ls_result <- local_search_first_improvement(
     asignaciones_df = sa_result$best_solution,
     w1 = w1,
@@ -77,8 +86,8 @@ for (i in seq_along(pesos)) {
   
   res_final_ls <- construir_grafo_y_componentes(ls_result$solution)
   
-  # Guardar resultados
-  resultados[[i]] <- data.frame(
+  # Record results
+  results[[i]] <- data.frame(
     archivo = basename(file),
     grupos = params$grupos,
     alumnos = params$alumnos,
@@ -95,16 +104,16 @@ for (i in seq_along(pesos)) {
     varianza_final = var(res_final_ls$sizes)
   )
   
-  cat(sprintf("  -> Peso %d/%d (w1=%.1f, w2=%.1f): Fitness final %.4f\n",
+  cat(sprintf("  -> Weight %d/%d (w1=%.1f, w2=%.1f): Final fitness %.4f\n",
               i, length(pesos), w1, w2, ls_result$fitness))
   
-  # Guardar la mejor solución final en un archivo RDS
+  # Save the best solution after local search
   output_rds <- paste0(output_dir, "/", basename(file), "_w1_", w1, "_w2_", w2, "_final.rds")
   saveRDS(ls_result$solution, output_rds)
 }
 
-# Guardar resultados en CSV
-final_df <- bind_rows(resultados)
+# Combine all results and save to CSV
+final_df <- bind_rows(results)
 write_csv(final_df, output_csv)
 
-cat("Finalizado archivo", basename(file), "Resultados guardados en", output_csv, "\n")
+cat("Finished processing", basename(file), "Results saved to", output_csv, "\n")
