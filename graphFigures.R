@@ -1,17 +1,17 @@
 crear_y_graficar_grafo <- function(graph, title = "") {
-  # 1. Calcular componentes conexos
+  # 1. Compute connected components
   comps <- components(graph)
   num_components <- comps$no
   component_sizes <- comps$csize
-  variance_sizes <- if(length(component_sizes) > 1) var(component_sizes) else 0
+  variance_sizes <- if (length(component_sizes) > 1) var(component_sizes) else 0
   
-  cat("Número de componentes conexos:", num_components, "\n")
-  cat("Varianza de los tamaños de los componentes:", variance_sizes, "\n")
+  cat("Number of connected components:", num_components, "\n")
+  cat("Variance of component sizes:", variance_sizes, "\n")
   
-  # 2. Asignar componentes como atributo del grafo
+  # 2. Assign component ID to each node as a graph attribute
   V(graph)$component <- comps$membership
   
-  # 3. Generar una paleta de colores adecuada
+  # 3. Generate a suitable color palette based on the number of components
   num_components <- max(V(graph)$component)
   if (num_components <= 9) {
     palette <- brewer.pal(n = num_components, name = "Set1")
@@ -20,7 +20,7 @@ crear_y_graficar_grafo <- function(graph, title = "") {
     palette <- colorRampPalette(base_colors)(num_components)
   }
   
-  # 4. Graficar la red
+  # 4. Plot the graph using ggraph with manual layout (based on x, y node coordinates)
   plot <- ggraph(graph, layout = "manual", x = V(graph)$x, y = V(graph)$y) +
     geom_edge_loop(aes(alpha = 0.7), show.legend = FALSE, color = "red") +
     geom_edge_arc(aes(alpha = 0.5), show.legend = FALSE, color = "grey") +
