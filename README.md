@@ -29,6 +29,8 @@ The Sibling Rewiring Problem simultaneously optimizes two conflicting objectives
 - `datasets/`: Contains input CSV files with student enrollment data.
 - `results/`: Stores output files, including assignment results and visualizations.
 - `analysis/`: Includes scripts and notebooks for analyzing the results.
+- `robustness/`: Includes scripts and notebooks for creating, run the experiments and analyzing the results of the robustness appendix.
+- `robustness/datasetsRobustness`: Contains input CSV files with student enrollment data for the robustness analysis.
 - `GA_experiment.R`: Script to run experiments using Genetic Algorithms.
 - `SAexperiment.R`: Script to run experiments using Simulated Annealing.
 - `heuristicExperiment.R`: Script to run heuristic-based and basic assignment experiments.
