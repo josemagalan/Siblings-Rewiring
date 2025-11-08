@@ -1,5 +1,4 @@
-# ANALISIS_ROBUSTNESS.R
-# Adaptado para datasets GEOM / NEGBIN / EMP en datasetsRobustness/
+# Adapted for GEOM / NEGBIN / EMP datasets located in datasetsRobustness/
 
 library(tidyverse)
 library(igraph)
@@ -11,21 +10,21 @@ library(writexl)
 library(stringr)
 library(purrr)
 
-# Funciones externas
+# External helper functions (graph styling and leveling/assignment utilities)
 source("graphFigures.R")
 source("nivelacion.R")
 
-# Carpetas
+# Output folders
 dir.create("resultsRobustness", showWarnings = FALSE)
 
 # -------------------------------------------------
-# Localiza ficheros robustez
+# Locate robustness dataset files
 # -------------------------------------------------
 files <- list.files("datasetsRobustness", pattern = "^ds_(GEOM|NEGBIN|EMP)_.*\\.csv$", full.names = TRUE)
 
 # -------------------------------------------------
-# Helper: parsear parámetros desde el nombre del fichero
-# Formatos esperados:
+# Helper: parse parameters from the file name
+# Expected patterns:
 # GEOM:   ds_GEOM_{G}G_{S}S_{C}C_mu{mu}_p{p}_{seed}.csv
 # NEGBIN: ds_NEGBIN_{G}G_{S}S_{C}C_mu{mu}_r{r}_p{p}_{seed}.csv
 # EMP:    ds_EMP_{G}G_{S}S_{C}C_{fixed|geomTail}_{seed}.csv
@@ -37,12 +36,12 @@ parse_params <- function(file_path) {
   
   dist <- parts[2]
   
-  # Genérico: {G}G_{S}S_{C}C
+  # Common prefix: {G}G_{S}S_{C}C
   groups <- as.numeric(str_remove(parts[3], "G$"))
   students_per_group <- as.numeric(str_remove(parts[4], "S$"))
   courses <- as.numeric(str_remove(parts[5], "C$"))
   
-  # Inicializar
+  # Initialize optional parameters (distribution-specific)
   mu_target <- NA_real_
   r_disp <- NA_real_
   p_param <- NA_real_
@@ -81,7 +80,7 @@ parse_params <- function(file_path) {
 params_df <- map_dfr(files, parse_params)
 
 # -------------------------------------------------
-# Data frame de resultados
+# Results data frame (will be filled within the loop)
 # -------------------------------------------------
 results <- tibble(
   filename = character(),
@@ -107,7 +106,7 @@ results <- tibble(
 )
 
 # -------------------------------------------------
-# Bucle de análisis (idéntico a tu pipeline, solo cambia el parseo)
+# Main analysis loop (same pipeline; only the filename parsing differs)
 # -------------------------------------------------
 for (i in seq_len(nrow(params_df))) {
   file <- params_df$fullpath[i]
@@ -117,7 +116,7 @@ for (i in seq_len(nrow(params_df))) {
   file_name <- meta$filename
   params_str <- str_remove(file_name, "\\.csv$")
   
-  # μ realizado (por control y para EMP)
+  # Realized μ (sanity check; also used for EMP datasets)
   mu_realized <- data %>%
     count(family_id, name = "K") %>%
     summarise(mu = mean(K)) %>% pull(mu)
@@ -127,6 +126,7 @@ for (i in seq_len(nrow(params_df))) {
   ##############################
   data_initial <- data %>% mutate(node = paste(course, group, sep = "-"))
   
+  # Build edges by connecting siblings (pairs within a family)
   edges_initial <- data_initial %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -137,6 +137,7 @@ for (i in seq_len(nrow(params_df))) {
     inner_join(data_initial, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
     transmute(from = node_src, to = node_dst)
   
+  # Nodes are (course, group) cells with fixed layout coordinates
   nodes_initial <- data_initial %>%
     distinct(node, course, group) %>%
     mutate(
@@ -164,6 +165,8 @@ for (i in seq_len(nrow(params_df))) {
   ##############################
   data_bubble <- data %>% mutate(node = paste(course, group, sep = "-"))
   
+  # Edges: if siblings are in the same course but different groups,
+  # collapse the link onto the same node (bubble logic); otherwise, keep original link
   edges_bubble <- data_bubble %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -206,15 +209,20 @@ for (i in seq_len(nrow(params_df))) {
   ##############################
   # Heuristic
   ##############################
+  # For each course, list available groups (used to assign a single common group to each family)
   groups_per_course <- data_bubble %>%
     group_by(course) %>%
     summarise(groups_avail = list(unique(group)), .groups = "drop") %>%
     deframe()
   
+  # Courses attended by each family
   families_courses <- data_bubble %>%
     group_by(family_id) %>%
     summarise(courses = list(unique(course)), .groups = "drop")
   
+  # Assign an "agreed" group to the whole family:
+  # if there is an intersection of groups across their courses, pick one at random;
+  # otherwise, pick a random group from the first course.
   families_groups <- families_courses %>%
     mutate(
       common_groups = map(courses, ~ {
@@ -234,12 +242,14 @@ for (i in seq_len(nrow(params_df))) {
     ) %>%
     ungroup()
   
+  # Apply the family-wise group assignment
   data_assigned <- data_bubble %>%
     left_join(families_groups %>% select(family_id, assigned_group), by = "family_id") %>%
     mutate(group = assigned_group,
            node  = paste(course, group, sep = "-")) %>%
     select(-assigned_group)
   
+  # Build edges after heuristic allocation (siblings paired within families)
   edges_heuristic <- data_assigned %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -250,6 +260,7 @@ for (i in seq_len(nrow(params_df))) {
     inner_join(data_assigned, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
     transmute(from = node_src, to = node_dst)
   
+  # Nodes (with fixed layout) for the heuristic graph
   nodes_heuristic <- data_assigned %>%
     distinct(node, course, group) %>%
     mutate(x = as.numeric(as.factor(group)),
@@ -259,9 +270,11 @@ for (i in seq_len(nrow(params_df))) {
   graph_heuristic <- graph_from_data_frame(edges_heuristic, vertices = nodes_heuristic, directed = FALSE)
   n_components_heuristic <- components(graph_heuristic)$no
   
+  # Only families with >1 sibling to compute group loads
   data_assigned_siblings <- data_assigned %>%
     group_by(family_id) %>% filter(n() > 1) %>% ungroup()
   
+  # Max number of assigned siblings in a single (course, group) cell
   max_students <- data_assigned_siblings %>%
     group_by(course, group) %>%
     summarise(n_students = n(), .groups = "drop") %>%
@@ -275,12 +288,14 @@ for (i in seq_len(nrow(params_df))) {
   ##############################
   # Balanced Heuristic
   ##############################
+  # Apply exact balancing procedure and re-compute nodes
   datosNivelados <- Ajustar_Exacto_Nivelacion(data_assigned) %>%
     mutate(node = paste(course, group, sep = "-"))
   
   saveRDS(datosNivelados, file.path("results", paste0(params_str, "_datosNivelados.rds")))
   readr::write_csv(datosNivelados, file.path("results", paste0(params_str, "_datosNivelados.csv")))
   
+  # Edges for the balanced allocation (siblings paired after balancing)
   edges_heuristic_balanced <- datosNivelados %>%
     group_by(family_id) %>%
     filter(n() > 1) %>%
@@ -291,6 +306,7 @@ for (i in seq_len(nrow(params_df))) {
     inner_join(data_assigned, by = c("student_id2" = "student_id"), suffix = c("_src", "_dst")) %>%
     transmute(from = node_src, to = node_dst)
   
+  # Nodes (with fixed layout) for the balanced heuristic graph
   nodes_heuristic_balanced <- datosNivelados %>%
     distinct(node, course, group) %>%
     mutate(x = as.numeric(as.factor(group)),
@@ -302,6 +318,7 @@ for (i in seq_len(nrow(params_df))) {
   n_components_heuristic_balanced <- comp_hb$no
   var_components_heuristic_balanced <- if (n_components_heuristic_balanced > 1) var(comp_hb$csize) else 0
   
+  # Only families with >1 sibling to compute group loads (balanced)
   data_assigned_siblings2 <- datosNivelados %>%
     group_by(family_id) %>% filter(n() > 1) %>% ungroup()
   
@@ -311,7 +328,7 @@ for (i in seq_len(nrow(params_df))) {
     pull(n_students) %>%
     max(., na.rm = TRUE)
   
-  # Guardar fila en resultados
+  # Append a results row for this dataset instance
   results <- results %>% add_row(
     filename = file_name,
     distribution = meta$distribution,
@@ -337,20 +354,20 @@ for (i in seq_len(nrow(params_df))) {
 }
 
 # -------------------------------------------------
-# Guardar resumen
+# Save per-instance summary table
 # -------------------------------------------------
 readr::write_csv(results, "resultsRobustness/results_summary_robustness.csv")
 
 #####################################################################
-# Agregación y visualización (adaptada)
+# Aggregation and visualization (adapted for robustness datasets)
 #####################################################################
 results <- readr::read_csv("resultsRobustness/results_summary_robustness.csv", show_col_types = FALSE)
 
-# Usaremos un eje X "mu_effective": mu_target si está, si no mu_realized
+# Use an effective μ on the x-axis: prefer mu_target, fallback to realized μ
 results <- results %>%
   mutate(mu_effective = ifelse(!is.na(mu_target), mu_target, mu_realized))
 
-# Agrupar por distribución, mu y configuración
+# Aggregate per distribution, μ, and configuration
 grouped <- results %>%
   group_by(distribution, mu_effective, groups, students_per_group) %>%
   summarise(
@@ -364,6 +381,7 @@ grouped <- results %>%
     .groups = "drop"
   )
 
+# Long-format for plotting the strategy trends
 data_long <- grouped %>%
   pivot_longer(
     cols = c(mean_initial, mean_bubble, mean_heuristic),
@@ -381,13 +399,13 @@ data_long <- grouped %>%
                       labels = c("Initial","Bubble","Heuristic"))
   )
 
-# Paletas (opcional)
+# Color palette for strategies (optional)
 cols <- c("Initial"="#1f77b4","Bubble"="#2ca02c","Heuristic"="#ff7f0e")
 
-# Figura: como la tuya, pero:
+# Figure:
 # - x = mu_effective
-# - facetas por groups x students_per_group
-# - línea discontinua del eje secundario: students_per_group (es dinámica por facet)
+# - facets by groups × students_per_group
+# - purple series (secondary axis) shows mean_max_students_heuristic / 5
 my_plot <- ggplot() +
   geom_smooth(
     data = data_long,
@@ -430,9 +448,8 @@ my_plot <- ggplot() +
 ggsave("resultsRobustness/Average_Components_and_Max_Students_ROBUSTNESS.pdf", plot = my_plot, device = "pdf", width = 11, height = 10)
 ggsave("resultsRobustness/Average_Components_and_Max_Students_ROBUSTNESS.jpg", plot = my_plot, device = "jpeg", width = 11, height = 10, dpi = 300)
 
-# Nota: la línea discontinua roja variable por facet (según students_per_group)
-# Si la quieres dibujar, puedes generar una versión por facet con annotation_custom,
-# pero en ggplot base es más cómodo crear un data.frame con y = students_per_group/5 y usar geom_hline(data=...).
+# Note: the dashed red line per facet (students_per_group) can be overlaid using a facet-aware data frame
+# with y = students_per_group/5 and geom_hline(data = ...). Below, 'ref_lines' is prepared for that.
 ref_lines <- grouped %>%
   distinct(groups, students_per_group) %>%
   mutate(y_line = students_per_group / 5)
