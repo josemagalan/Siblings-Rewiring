@@ -317,3 +317,261 @@ sink("analysis/friedman_test_variance.txt")
 cat("Friedman Test for Variance of Component Sizes:\n\n")
 print(test_variance)
 sink()
+
+#########################################
+
+
+
+# Función para obtener la frontera Pareto (maximizar n_components, minimizar var_components)
+pareto_front <- function(df){
+  dominated <- logical(nrow(df))
+  for(i in seq_len(nrow(df))){
+    dominated[i] <- any(
+      (df$n_components >= df$n_components[i] & df$var_components <= df$var_components[i]) &
+        (df$n_components > df$n_components[i] | df$var_components < df$var_components[i])
+    )
+  }
+  return(df[!dominated, ])
+}
+
+
+
+
+# 1. Seleccionar columnas relevantes (incluye todo lo necesario)
+pareto_data <- AllExpResults %>%
+  select(filename, Algorithm, groups, poisson_param, seed,
+         n_components, var_components) %>%
+  distinct()
+
+# 2. Obtener frontera de Pareto por problema (filename)
+# Usamos todos los campos, no solo n_components y var_components
+pareto_global_detailed <- pareto_data %>%
+  group_by(filename) %>%
+  nest() %>%
+  mutate(
+    pareto_points = map(data, pareto_front)
+  ) %>%
+  select(filename, pareto_points) %>%
+  unnest(pareto_points)  # esto devuelve todos los campos originales de cada punto
+
+pareto_with_algorithms <- pareto_global_detailed %>%
+  group_by(filename, n_components, var_components, groups, poisson_param, seed) %>%
+  summarise(
+    Algorithms = paste(sort(unique(Algorithm)), collapse = ", "),
+    .groups = "drop"
+  )
+
+
+# Puntos únicos de la frontera por problema
+pareto_unique_points <- pareto_global_detailed %>%
+  distinct(filename, n_components, var_components) %>%
+  group_by(filename) %>%
+  summarise(total_pareto_points = n(), .groups = "drop")
+
+# Cuántos puntos de la frontera ha encontrado cada algoritmo por problema
+pareto_points_by_algorithm <- pareto_global_detailed %>%
+  distinct(filename, n_components, var_components, Algorithm) %>%
+  group_by(filename, Algorithm) %>%
+  summarise(points_found = n(), .groups = "drop")
+
+
+pareto_coverage <- pareto_points_by_algorithm %>%
+  left_join(pareto_unique_points, by = "filename") %>%
+  mutate(percent_covered = round(100 * points_found / total_pareto_points, 2))
+
+
+# Transformar a formato ancho
+pareto_wide <- pareto_coverage %>%
+  select(filename, Algorithm, points_found, total_pareto_points) %>%
+  pivot_wider(
+    names_from = Algorithm,
+    values_from = points_found,
+    values_fill = 0  # Si un algoritmo no está, se pone 0
+  )
+
+
+pareto_wide <- pareto_wide %>%
+  mutate(filename_clean = str_remove(filename, "\\.csv$")) %>%
+  separate(filename_clean, into = c("prefix", "groups", "students", "courses", "poisson_param", "seed"), sep = "_", remove = FALSE) %>%
+  mutate(
+    groups = as.integer(groups),
+    poisson_param = as.numeric(poisson_param),
+    seed = as.integer(seed)
+  ) %>%
+  select(-prefix, -students, -courses, -filename_clean)
+
+
+
+# Reordenar columnas a tu gusto
+pareto_final <- pareto_wide %>%
+  relocate(filename, total_pareto_points, Initial, Bubble, HeuristicBalanced, SA, GA, groups, poisson_param, seed)
+
+
+pareto_final <- pareto_final %>%
+  rename(Heuristic = HeuristicBalanced)
+
+
+write_csv(pareto_final, "analysis/pareto_coverage_wide.csv")
+
+
+pareto_final_summary <- pareto_final %>%
+  group_by(groups, poisson_param) %>%
+  summarise(
+    avg_total_pareto_points = mean(total_pareto_points),
+    avg_initial = mean(Initial),
+    avg_bubble = mean(Bubble),
+    avg_heuristic = mean(Heuristic),
+    avg_sa = mean(SA),
+    avg_ga = mean(GA),
+    .groups = "drop"
+  )
+
+
+pareto_final_summary <- pareto_final_summary %>%
+  mutate(across(where(is.numeric), ~ round(.x, 2)))
+
+
+write_csv(pareto_final_summary, "analysis/pareto_summary_by_group_poisson.csv")
+
+
+
+pareto_long <- pareto_final_summary %>%
+  pivot_longer(
+    cols = starts_with("avg_"),
+    names_to = "Metric",
+    values_to = "Average"
+  ) %>%
+  mutate(
+    Metric = recode(Metric,
+                    "avg_total_pareto_points" = "Total Pareto Points",
+                    "avg_initial" = "Initial",
+                    "avg_bubble" = "Bubble",
+                    "avg_heuristic" = "Heuristic",
+                    "avg_sa" = "SA",
+                    "avg_ga" = "GA"
+    )
+  )
+
+# Asegurar orden y tipo de variable
+pareto_long <- pareto_long %>%
+  mutate(
+    Metric = factor(Metric, levels = c("Total Pareto Points", "Initial", "Bubble", "Heuristic", "SA", "GA"))
+  )
+
+# Definir colores: uno especial para "Total", y Brewer para los demás
+colors <- c(
+  "Total Pareto Points" = "black",
+  "Initial" = RColorBrewer::brewer.pal(6, "Dark2")[1],
+  "Bubble" = RColorBrewer::brewer.pal(6, "Dark2")[2],
+  "Heuristic" = RColorBrewer::brewer.pal(6, "Dark2")[3],
+  "SA" = RColorBrewer::brewer.pal(6, "Dark2")[4],
+  "GA" = RColorBrewer::brewer.pal(6, "Dark2")[5]
+)
+
+# Definir tipo de línea
+linetypes <- c(
+  "Total Pareto Points" = "dashed",
+  "Initial" = "solid",
+  "Bubble" = "solid",
+  "Heuristic" = "solid",
+  "SA" = "solid",
+  "GA" = "solid"
+)
+
+p7<-ggplot(pareto_long, aes(x = poisson_param, y = Average, color = Metric, linetype = Metric, shape = Metric)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2) +
+  facet_grid(groups ~ ., labeller = label_both) +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = colors) +
+  scale_linetype_manual(values = linetypes) +
+  scale_shape_manual(values = c(
+    "Total Pareto Points" = 16,  # circle
+    "Initial" = 15,              # square
+    "Bubble" = 17,               # triangle
+    "Heuristic" = 3,             # plus
+    "SA" = 4,                    # x
+    "GA" = 8                     # asterisk
+  )) +
+  labs(
+    title = "Average number of Pareto points by strategy and Poisson parameter",
+    x = "Poisson parameter",
+    y = "Average number of points",
+    color = "Metric",
+    linetype = "Metric",
+    shape = "Metric"
+  )
+
+print(p7)
+
+# Guardar gráfico varianza
+ggsave("analysis/7_Average number of Pareto points by strategy and Poisson parameter.pdf", plot = p7,
+       width = 8, height = 5, units = "in")
+
+ggsave("analysis/7_Average number of Pareto points by strategy and Poisson parameter.jpg", plot = p7,
+       width = 8, height = 5, units = "in", dpi = 300)
+
+
+##################################################################
+
+
+pareto_percent_summary <- pareto_final_summary %>%
+  mutate(
+    pct_initial = 100 * avg_initial / avg_total_pareto_points,
+    pct_bubble = 100 * avg_bubble / avg_total_pareto_points,
+    pct_heuristic = 100 * avg_heuristic / avg_total_pareto_points,
+    pct_sa = 100 * avg_sa / avg_total_pareto_points,
+    pct_ga = 100 * avg_ga / avg_total_pareto_points
+  )
+
+
+pareto_percent_long <- pareto_percent_summary %>%
+  select(groups, poisson_param,
+         pct_initial, pct_bubble, pct_heuristic, pct_sa, pct_ga) %>%
+  pivot_longer(
+    cols = starts_with("pct_"),
+    names_to = "Algorithm",
+    values_to = "Percent"
+  ) %>%
+  mutate(
+    Algorithm = recode(Algorithm,
+                       "pct_initial" = "Initial",
+                       "pct_bubble" = "Bubble",
+                       "pct_heuristic" = "Heuristic",
+                       "pct_sa" = "SA",
+                       "pct_ga" = "GA"
+    )
+  )
+
+pareto_percent_long <- pareto_percent_long %>%
+  mutate(
+    Algorithm = factor(Algorithm, levels = c("Initial", "Bubble", "Heuristic", "SA", "GA"))
+  )
+
+
+p9 <- ggplot(pareto_percent_long, aes(x = poisson_param, y = Algorithm, fill = Percent)) +
+  geom_tile(color = "white") +
+  facet_grid(groups ~ ., labeller = label_both) +
+  scale_fill_viridis(
+    name = "% of Pareto points",
+    limits = c(0, 100),
+    option = "D",
+    direction = -1  # ← Inversión del color
+  ) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Percentage of Pareto points found by strategy",
+    x = "Poisson parameter",
+    y = "Strategy"
+  )
+
+
+
+print(p9)
+
+ggsave("analysis/9_Pareto_points_percent_by_strategy_and_poisson_ordered.pdf", plot = p9,
+       width = 8, height = 6, units = "in")
+
+ggsave("analysis/9_Pareto_points_percent_by_strategy_and_poisson_ordered.jpg", plot = p9,
+       width = 8, height = 6, units = "in", dpi = 300)
+
