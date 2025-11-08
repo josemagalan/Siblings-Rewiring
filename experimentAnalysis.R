@@ -3,28 +3,28 @@ library(tidyverse)
 library(RColorBrewer)
 library(viridis)
 
-# Load all CSV files in 'results' folder that match the pattern "experiment_results_*.csv"
+# Load all CSV files in 'results' that match "experiment_results_*.csv" (Simulated Annealing runs)
 SAexpResults <- list.files(path = "results", 
                            pattern = "experiment_results_.*\\.csv$", 
                            full.names = TRUE) %>%
   map_df(read_csv)
 
-# Preview the first rows of the Simulated Annealing results
+# Quick preview of Simulated Annealing results
 print(SAexpResults)
 
-# Load all Genetic Algorithm results from the 'results/GA' folder
+# Load all Genetic Algorithm CSV results from 'results/GA'
 GAexpResults <- list.files(path = "results/GA", 
                            pattern = "experiment_results_GA_.*\\.csv$", 
                            full.names = TRUE) %>%
   map_df(read_csv)
 
-# Preview the first rows of the GA results
+# Quick preview of GA results
 print(GAexpResults)
 
-# Load the basic results summary
+# Load the basic results summary (Initial and Bubble baselines)
 BasicexpResults <- read_csv("results/results_summary.csv")
 
-# Transform basic results into long format and label the algorithms
+# Reshape basic results to long format and label algorithms (Initial vs Bubble)
 BasicexpResults_long <- BasicexpResults %>%
   select(filename, groups, students_per_group, courses, poisson_param, seed,
          n_components_initial, var_components_initial,
@@ -39,10 +39,11 @@ BasicexpResults_long <- BasicexpResults %>%
                             initial = "Initial",
                             bubble = "Bubble"))
 
-# Preview the transformed basic results
+# Preview reshaped basic results
 print(BasicexpResults_long)
 
-# Transform Simulated Annealing results into long format
+# Convert SA results to a unified long format (final solution metrics)
+# NOTE: the source data column is named 'poison' (kept as-is), representing the Poisson parameter
 SAexpResults_long <- SAexpResults %>%
   transmute(
     filename = archivo,
@@ -60,7 +61,8 @@ SAexpResults_long <- SAexpResults %>%
 # Preview SA results in long format
 print(SAexpResults_long)
 
-# Extract initial solution performance from SA results where w1 = 0 (only structure considered)
+# Extract the initial (pre-annealing) performance from SA runs where w1 = 0 (structure-only weight)
+# This corresponds to the leveled heuristic baseline we call "HeuristicBalanced"
 HeuristicexpResults_long <- SAexpResults %>%
   filter(w1 == 0) %>%
   transmute(
@@ -76,7 +78,7 @@ HeuristicexpResults_long <- SAexpResults %>%
   ) %>%
   mutate(filename = str_replace(filename, "_datosNivelados\\.rds$", ".csv"))
 
-# Transform GA results into long format
+# Convert GA results to the same long format (final solution metrics)
 GAexpResults_long <- GAexpResults %>%
   transmute(
     filename = archivo,
@@ -90,14 +92,16 @@ GAexpResults_long <- GAexpResults %>%
     var_components = varianza_final
   )
 
-# Merge all experimental results into one table
+# Merge all experimental results (Initial, Bubble, SA, GA, HeuristicBalanced) into one table
 AllExpResults <- bind_rows(BasicexpResults_long, SAexpResults_long, GAexpResults_long, HeuristicexpResults_long)
 
-# Ensure var_components has no missing values
+# Ensure 'var_components' has no missing values (replace NAs by 0)
 AllExpResults <- AllExpResults %>%
   mutate(var_components = replace_na(var_components, 0))
 
-# Compute Pareto indicators: MinVar (minimum variance) and Pareto dominance
+# Compute simple Pareto indicators within each (filename, Algorithm) slice:
+# - MinVar: flag solutions with minimum variance for a given (n_components)
+# - Pareto: non-dominated under (maximize n_components, minimize var_components)
 AllExpResults <- AllExpResults %>%
   group_by(filename, Algorithm, n_components) %>%
   mutate(
@@ -113,10 +117,10 @@ AllExpResults <- AllExpResults %>%
   ) %>%
   ungroup()
 
-# Jitter value to avoid overlapping points
+# Jitter magnitude to alleviate point overlap in plots
 jitter <- 0.05
 
-# Generate and save Pareto front plots per problem instance
+# Generate and save Pareto-front plots per problem instance (only Pareto-flagged points)
 AllExpResults %>%
   filter(Pareto == 1) %>%
   group_by(filename) %>%
@@ -133,7 +137,7 @@ AllExpResults %>%
     ggsave(filename = paste0("pareto/", .y$filename, ".jpg"), plot = plot, width = 8, height = 6)
   })
 
-# Save the complete data frame with all experimental results to a CSV file
+# Persist the full joined results to CSV for downstream analysis
 write_csv(AllExpResults, "results/AllExpResults.csv")
 
 
@@ -142,12 +146,12 @@ write_csv(AllExpResults, "results/AllExpResults.csv")
 #### Analysis of the three single-solution techniques ####
 #########################################
 
-# Filter only initial strategies with single solutions
+# Keep only one-shot strategies (Initial, Bubble, HeuristicBalanced)
 single_solutions <- AllExpResults %>%
   filter(Algorithm %in% c("Initial", "Bubble", "HeuristicBalanced")) %>%
   select(filename, groups, poisson_param, Algorithm, n_components, var_components)
 
-# Boxplot of the number of components by strategy
+# Boxplot: number of components by strategy
 ggplot(single_solutions, aes(x = Algorithm, y = n_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   theme_minimal() +
@@ -156,7 +160,7 @@ ggplot(single_solutions, aes(x = Algorithm, y = n_components, fill = Algorithm))
        y = "Number of components") +
   theme(legend.position = "none")
 
-# Boxplot of variance by strategy
+# Boxplot: variance by strategy
 ggplot(single_solutions, aes(x = Algorithm, y = var_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   theme_minimal() +
@@ -165,29 +169,30 @@ ggplot(single_solutions, aes(x = Algorithm, y = var_components, fill = Algorithm
        y = "Variance") +
   theme(legend.position = "none")
 
-# Convert to wide format to apply Friedman test on number of components
+# Convert to wide format for the Friedman test (number of components)
 wide_data <- single_solutions %>%
   select(filename, Algorithm, n_components) %>%
   pivot_wider(names_from = Algorithm, values_from = n_components) %>%
   drop_na()
 
-# Friedman test (non-parametric equivalent of repeated-measures ANOVA)
+# Friedman test (non-parametric repeated-measures ANOVA analogue) on components
 friedman.test(as.matrix(wide_data[, -1]))
 
-# Same for variance
+# Prepare wide format for variance
 wide_data_var <- single_solutions %>%
   select(filename, Algorithm, var_components) %>%
   pivot_wider(names_from = Algorithm, values_from = var_components) %>%
   drop_na()
 
+# Friedman test on variance
 friedman.test(as.matrix(wide_data_var[, -1]))
 
-# Pairwise post-hoc comparisons using Wilcoxon test (paired)
+# Pairwise post-hoc Wilcoxon signed-rank tests (paired)
 wilcox.test(wide_data$Initial, wide_data$Bubble, paired = TRUE)
 wilcox.test(wide_data$Initial, wide_data$HeuristicBalanced, paired = TRUE)
 wilcox.test(wide_data$Bubble, wide_data$HeuristicBalanced, paired = TRUE)
 
-# Trend of number of components across Poisson values
+# Trend of number of components as a function of the Poisson parameter (smoothed)
 ggplot(single_solutions, aes(x = poisson_param, y = n_components, color = Algorithm)) +
   geom_smooth(se = FALSE) +
   theme_minimal() +
@@ -207,14 +212,14 @@ ggplot(single_solutions, aes(x = factor(groups), y = var_components, fill = Algo
 #### Number of Components vs. Poisson Parameter by Strategy and Groups
 ###############################################
 
-# Prepare solution subset and define ordering
+# Subset to single-solution strategies and set plotting order/labels
 single_solutions <- AllExpResults %>%
   filter(Algorithm %in% c("Initial", "Bubble", "HeuristicBalanced")) %>%
   mutate(Algorithm = factor(Algorithm, 
                             levels = c("Initial", "Bubble", "HeuristicBalanced"),
                             labels = c("Initial", "Bubble", "Heuristic")))
 
-# Line plot with LOESS smoothing
+# LOESS-smoothed lines of components vs Poisson parameter, faceted by groups
 p <- ggplot(single_solutions, aes(x = poisson_param, y = n_components, color = Algorithm)) +
   geom_smooth(se = FALSE, method = "loess", span = 0.25, linewidth = 1.1) +
   theme_minimal(base_size = 14) +
@@ -225,7 +230,7 @@ p <- ggplot(single_solutions, aes(x = poisson_param, y = n_components, color = A
        y = "Number of Components",
        color = "Strategy")
 
-# Save the plot
+# Save the plot to PDF and JPG
 ggsave("analysis/1_components_poisson_groups.pdf", plot = p, width = 10, height = 6)
 ggsave("analysis/1_components_poisson_groups.jpg", plot = p, width = 10, height = 6, dpi = 300)
 
@@ -233,13 +238,13 @@ ggsave("analysis/1_components_poisson_groups.jpg", plot = p, width = 10, height 
 #### Variance of Components vs. Poisson Parameter by Strategy and Groups
 #############################################################
 
-# Reuse same subset with renamed strategy
+# Reuse same subset with human-friendly strategy label
 single_solutions <- single_solutions %>%
   mutate(Algorithm = factor(Algorithm, 
                             levels = c("Initial", "Bubble", "Heuristic"),
                             labels = c("Initial", "Bubble", "Heuristic")))
 
-# Line plot of variance
+# LOESS-smoothed lines of variance vs Poisson parameter, faceted by groups
 p_var <- ggplot(single_solutions, aes(x = poisson_param, y = var_components, color = Algorithm)) +
   geom_smooth(se = FALSE, method = "loess", span = 0.25, linewidth = 1.1) +
   theme_minimal(base_size = 14) +
@@ -250,7 +255,7 @@ p_var <- ggplot(single_solutions, aes(x = poisson_param, y = var_components, col
        y = "Variance of Component Sizes",
        color = "Strategy")
 
-# Save the plot
+# Save the plot to PDF and JPG
 ggsave("analysis/2_variance_poisson_groups.pdf", plot = p_var, width = 10, height = 6)
 ggsave("analysis/2_variance_poisson_groups.jpg", plot = p_var, width = 10, height = 6, dpi = 300)
 
@@ -258,10 +263,10 @@ ggsave("analysis/2_variance_poisson_groups.jpg", plot = p_var, width = 10, heigh
 #### Boxplots: Number of Components and Variance by Strategy
 ########################################################
 
-# Use color palette from RColorBrewer
+# Define a 3-color palette from RColorBrewer for consistency
 palette_colors <- brewer.pal(3, "Dark2")
 
-# Boxplot of number of components
+# Boxplot: number of components by strategy
 p1 <- ggplot(single_solutions, aes(x = Algorithm, y = n_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   scale_fill_manual(values = palette_colors) +
@@ -274,7 +279,7 @@ p1 <- ggplot(single_solutions, aes(x = Algorithm, y = n_components, fill = Algor
 ggsave("analysis/3_boxplot_components.pdf", plot = p1, width = 8, height = 5)
 ggsave("analysis/3_boxplot_components.jpg", plot = p1, width = 8, height = 5, dpi = 300)
 
-# Boxplot of component size variance
+# Boxplot: variance of component sizes by strategy
 p2 <- ggplot(single_solutions, aes(x = Algorithm, y = var_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   scale_fill_manual(values = palette_colors) +
@@ -291,7 +296,7 @@ ggsave("analysis/4_boxplot_variance.jpg", plot = p2, width = 8, height = 5, dpi 
 #### Friedman Tests on Number of Components and Variance
 ######################################################
 
-# Friedman test on number of components
+# Friedman test on number of components (wide matrix input)
 wide_data <- single_solutions %>%
   select(filename, Algorithm, n_components) %>%
   pivot_wider(names_from = Algorithm, values_from = n_components) %>%
@@ -299,7 +304,7 @@ wide_data <- single_solutions %>%
 
 test_components <- friedman.test(as.matrix(wide_data[, -1]))
 
-# Save the test result
+# Persist test result to a text file
 sink("analysis/friedman_test_components.txt")
 cat("Friedman Test for Number of Components:\n\n")
 print(test_components)
@@ -313,6 +318,7 @@ wide_data_var <- single_solutions %>%
 
 test_variance <- friedman.test(as.matrix(wide_data_var[, -1]))
 
+# Persist variance test result to a text file
 sink("analysis/friedman_test_variance.txt")
 cat("Friedman Test for Variance of Component Sizes:\n\n")
 print(test_variance)
@@ -322,7 +328,7 @@ sink()
 
 
 
-# Función para obtener la frontera Pareto (maximizar n_components, minimizar var_components)
+# Function to compute the Pareto front (maximize n_components, minimize var_components)
 pareto_front <- function(df){
   dominated <- logical(nrow(df))
   for(i in seq_len(nrow(df))){
@@ -337,14 +343,14 @@ pareto_front <- function(df){
 
 
 
-# 1. Seleccionar columnas relevantes (incluye todo lo necesario)
+# 1) Select relevant columns (keep all needed fields)
 pareto_data <- AllExpResults %>%
   select(filename, Algorithm, groups, poisson_param, seed,
          n_components, var_components) %>%
   distinct()
 
-# 2. Obtener frontera de Pareto por problema (filename)
-# Usamos todos los campos, no solo n_components y var_components
+# 2) Compute the Pareto front per problem instance (filename)
+# Use all fields, not just n_components and var_components
 pareto_global_detailed <- pareto_data %>%
   group_by(filename) %>%
   nest() %>%
@@ -352,8 +358,9 @@ pareto_global_detailed <- pareto_data %>%
     pareto_points = map(data, pareto_front)
   ) %>%
   select(filename, pareto_points) %>%
-  unnest(pareto_points)  # esto devuelve todos los campos originales de cada punto
+  unnest(pareto_points)  # returns all original fields for each Pareto point
 
+# Aggregate algorithms that hit the same Pareto point in an instance
 pareto_with_algorithms <- pareto_global_detailed %>%
   group_by(filename, n_components, var_components, groups, poisson_param, seed) %>%
   summarise(
@@ -361,35 +368,33 @@ pareto_with_algorithms <- pareto_global_detailed %>%
     .groups = "drop"
   )
 
-
-# Puntos únicos de la frontera por problema
+# Unique Pareto points per instance
 pareto_unique_points <- pareto_global_detailed %>%
   distinct(filename, n_components, var_components) %>%
   group_by(filename) %>%
   summarise(total_pareto_points = n(), .groups = "drop")
 
-# Cuántos puntos de la frontera ha encontrado cada algoritmo por problema
+# How many Pareto points each algorithm found per instance
 pareto_points_by_algorithm <- pareto_global_detailed %>%
   distinct(filename, n_components, var_components, Algorithm) %>%
   group_by(filename, Algorithm) %>%
   summarise(points_found = n(), .groups = "drop")
 
-
+# Coverage of the Pareto front per algorithm and instance (% computed later)
 pareto_coverage <- pareto_points_by_algorithm %>%
   left_join(pareto_unique_points, by = "filename") %>%
   mutate(percent_covered = round(100 * points_found / total_pareto_points, 2))
 
-
-# Transformar a formato ancho
+# Wide-format table of coverage per instance
 pareto_wide <- pareto_coverage %>%
   select(filename, Algorithm, points_found, total_pareto_points) %>%
   pivot_wider(
     names_from = Algorithm,
     values_from = points_found,
-    values_fill = 0  # Si un algoritmo no está, se pone 0
+    values_fill = 0  # If an algorithm is absent, set count to 0
   )
 
-
+# Parse filename into structured fields for convenient sorting/filtering
 pareto_wide <- pareto_wide %>%
   mutate(filename_clean = str_remove(filename, "\\.csv$")) %>%
   separate(filename_clean, into = c("prefix", "groups", "students", "courses", "poisson_param", "seed"), sep = "_", remove = FALSE) %>%
@@ -400,20 +405,18 @@ pareto_wide <- pareto_wide %>%
   ) %>%
   select(-prefix, -students, -courses, -filename_clean)
 
-
-
-# Reordenar columnas a tu gusto
+# Reorder columns for readability
 pareto_final <- pareto_wide %>%
   relocate(filename, total_pareto_points, Initial, Bubble, HeuristicBalanced, SA, GA, groups, poisson_param, seed)
 
-
+# Harmonize algorithm naming (HeuristicBalanced -> Heuristic)
 pareto_final <- pareto_final %>%
   rename(Heuristic = HeuristicBalanced)
 
-
+# Save the wide-format coverage table
 write_csv(pareto_final, "analysis/pareto_coverage_wide.csv")
 
-
+# Average coverage statistics grouped by (groups, poisson_param)
 pareto_final_summary <- pareto_final %>%
   group_by(groups, poisson_param) %>%
   summarise(
@@ -426,15 +429,14 @@ pareto_final_summary <- pareto_final %>%
     .groups = "drop"
   )
 
-
+# Round numeric columns for cleaner reporting
 pareto_final_summary <- pareto_final_summary %>%
   mutate(across(where(is.numeric), ~ round(.x, 2)))
 
-
+# Save grouped summary
 write_csv(pareto_final_summary, "analysis/pareto_summary_by_group_poisson.csv")
 
-
-
+# Long-format version for plotting multiple metrics together
 pareto_long <- pareto_final_summary %>%
   pivot_longer(
     cols = starts_with("avg_"),
@@ -452,13 +454,13 @@ pareto_long <- pareto_final_summary %>%
     )
   )
 
-# Asegurar orden y tipo de variable
+# Ensure ordered factors for consistent legend/facets
 pareto_long <- pareto_long %>%
   mutate(
     Metric = factor(Metric, levels = c("Total Pareto Points", "Initial", "Bubble", "Heuristic", "SA", "GA"))
   )
 
-# Definir colores: uno especial para "Total", y Brewer para los demás
+# Define colors (dedicated color for "Total", Brewer palette for algorithms)
 colors <- c(
   "Total Pareto Points" = "black",
   "Initial" = RColorBrewer::brewer.pal(6, "Dark2")[1],
@@ -468,7 +470,7 @@ colors <- c(
   "GA" = RColorBrewer::brewer.pal(6, "Dark2")[5]
 )
 
-# Definir tipo de línea
+# Line types for each metric (dashed for total count)
 linetypes <- c(
   "Total Pareto Points" = "dashed",
   "Initial" = "solid",
@@ -478,6 +480,7 @@ linetypes <- c(
   "GA" = "solid"
 )
 
+# Plot: average number of Pareto points by strategy and Poisson parameter (faceted by groups)
 p7<-ggplot(pareto_long, aes(x = poisson_param, y = Average, color = Metric, linetype = Metric, shape = Metric)) +
   geom_line(linewidth = 1.2) +
   geom_point(size = 2) +
@@ -504,7 +507,7 @@ p7<-ggplot(pareto_long, aes(x = poisson_param, y = Average, color = Metric, line
 
 print(p7)
 
-# Guardar gráfico varianza
+# Save the plot (PDF and JPG)
 ggsave("analysis/7_Average number of Pareto points by strategy and Poisson parameter.pdf", plot = p7,
        width = 8, height = 5, units = "in")
 
@@ -515,6 +518,7 @@ ggsave("analysis/7_Average number of Pareto points by strategy and Poisson param
 ##################################################################
 
 
+# Convert average counts to percentages of the total Pareto points
 pareto_percent_summary <- pareto_final_summary %>%
   mutate(
     pct_initial = 100 * avg_initial / avg_total_pareto_points,
@@ -524,7 +528,7 @@ pareto_percent_summary <- pareto_final_summary %>%
     pct_ga = 100 * avg_ga / avg_total_pareto_points
   )
 
-
+# Long-format table of percentages for heatmap plotting
 pareto_percent_long <- pareto_percent_summary %>%
   select(groups, poisson_param,
          pct_initial, pct_bubble, pct_heuristic, pct_sa, pct_ga) %>%
@@ -543,12 +547,13 @@ pareto_percent_long <- pareto_percent_summary %>%
     )
   )
 
+# Enforce a logical algorithm ordering for plotting
 pareto_percent_long <- pareto_percent_long %>%
   mutate(
     Algorithm = factor(Algorithm, levels = c("Initial", "Bubble", "Heuristic", "SA", "GA"))
   )
 
-
+# Heatmap: percentage of Pareto points found by each strategy, vs Poisson parameter and groups
 p9 <- ggplot(pareto_percent_long, aes(x = poisson_param, y = Algorithm, fill = Percent)) +
   geom_tile(color = "white") +
   facet_grid(groups ~ ., labeller = label_both) +
@@ -556,7 +561,7 @@ p9 <- ggplot(pareto_percent_long, aes(x = poisson_param, y = Algorithm, fill = P
     name = "% of Pareto points",
     limits = c(0, 100),
     option = "D",
-    direction = -1  # ← Inversión del color
+    direction = -1  # invert color scale so higher values are visually prominent
   ) +
   theme_minimal(base_size = 14) +
   labs(
@@ -565,13 +570,11 @@ p9 <- ggplot(pareto_percent_long, aes(x = poisson_param, y = Algorithm, fill = P
     y = "Strategy"
   )
 
-
-
 print(p9)
 
+# Save the heatmap (PDF and JPG)
 ggsave("analysis/9_Pareto_points_percent_by_strategy_and_poisson_ordered.pdf", plot = p9,
        width = 8, height = 6, units = "in")
 
 ggsave("analysis/9_Pareto_points_percent_by_strategy_and_poisson_ordered.jpg", plot = p9,
        width = 8, height = 6, units = "in", dpi = 300)
-
