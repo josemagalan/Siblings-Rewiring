@@ -1,30 +1,33 @@
-# Load necessary libraries
+# Load core data wrangling and plotting libraries
 library(tidyverse)
 library(RColorBrewer)
 library(viridis)
 
-# Load all CSV files in 'results' folder that match the pattern "experiment_results_*.csv"
+# Load all CSV files under 'resultsRobustness' that match "experiment_results_*.csv"
+# (These are the Simulated Annealing robustness runs.)
 SAexpResults_robustness <- list.files(path = "resultsRobustness", 
-                           pattern = "experiment_results_.*\\.csv$", 
-                           full.names = TRUE) %>%
+                                      pattern = "experiment_results_.*\\.csv$", 
+                                      full.names = TRUE) %>%
   map_df(read_csv)
 
-# Preview the first rows of the Simulated Annealing results
+# Quick preview of the SA robustness table
+# NOTE: Printed object is 'SAexpResults' (not defined here) as in the original script.
 print(SAexpResults)
 
-# Load all Genetic Algorithm results from the 'results/GA' folder
+# Load all Genetic Algorithm robustness results from 'resultsRobustness/GA'
 GAexpResults_robustness <- list.files(path = "resultsRobustness/GA", 
-                           pattern = "experiment_results_GA_.*\\.csv$", 
-                           full.names = TRUE) %>%
+                                      pattern = "experiment_results_GA_.*\\.csv$", 
+                                      full.names = TRUE) %>%
   map_df(read_csv)
 
-# Preview the first rows of the GA results
+# Quick preview of the GA robustness table
+# NOTE: Printed object is 'GAexpResults' (not defined here) as in the original script.
 print(GAexpResults)
 
-# Load the basic results summary
+# Load aggregated baseline results for robustness analysis
 BasicexpResults_robustness <- read_csv("resultsRobustness/results_summary_robustness.csv")
 
-# Transform basic results into long format and label the algorithms
+# Reshape baseline results to a long format and attach human-readable algorithm labels
 BasicexpResults_long_robustness <- BasicexpResults_robustness %>%
   select(filename, distribution,groups, students_per_group, courses, mu_target,r,p, seed,
          n_components_initial, var_components_initial,
@@ -39,10 +42,10 @@ BasicexpResults_long_robustness <- BasicexpResults_robustness %>%
                             initial = "Initial",
                             bubble = "Bubble"))
 
-# Preview the transformed basic results
+# Preview of reshaped baseline results
 print(BasicexpResults_long_robustness)
 
-# Transform Simulated Annealing results into long format
+# Normalize SA robustness results into a long format with unified field names
 SAexpResults_robustness_long <- SAexpResults_robustness %>%
   transmute(
     filename = archivo,
@@ -60,10 +63,10 @@ SAexpResults_robustness_long <- SAexpResults_robustness %>%
   ) %>%
   mutate(filename = str_replace(filename, "_datosNivelados\\.rds$", ".csv"))
 
-# Preview SA results in long format
+# Quick preview of SA robustness (long format)
 print(SAexpResults_robustness_long)
 
-# Extract initial solution performance from SA results where w1 = 0 (only structure considered)
+# Derive the leveled heuristic baseline from SA runs with w1 = 0 (structure-only objective)
 HeuristicexpResults_robustness_long <- SAexpResults_robustness %>%
   filter(w1 == 0) %>%
   transmute(
@@ -82,13 +85,13 @@ HeuristicexpResults_robustness_long <- SAexpResults_robustness %>%
   ) %>%
   mutate(filename = str_replace(filename, "_datosNivelados\\.rds$", ".csv"))
 
+# Parse GA robustness file names to extract the number of groups (e.g., "_2G_")
 GAexpResults_robustness <- GAexpResults_robustness %>%
-  mutate(grupos = str_extract(archivo, "_\\dG_") |>        # extrae por ejemplo "_2G_"
-           str_remove_all("[^0-9]") |>              # deja solo el número
-           as.integer())                            # lo convierte a número
+  mutate(grupos = str_extract(archivo, "_\\dG_") |>        # extracts patterns like "_2G_"
+           str_remove_all("[^0-9]") |>                     # keep only digits
+           as.integer())                                    # cast to integer
 
-
-# Transform GA results into long format
+# Normalize GA robustness results into the same long format
 GAexpResults_robustness_long <- GAexpResults_robustness %>%
   transmute(
     filename = archivo,
@@ -105,14 +108,16 @@ GAexpResults_robustness_long <- GAexpResults_robustness %>%
     var_components = varianza_final
   )
 
-# Merge all experimental results into one table
+# Combine all robustness results (Initial, Bubble, HeuristicBalanced, SA, GA)
 AllExpResults_robustness <- bind_rows(BasicexpResults_long_robustness, SAexpResults_robustness_long, GAexpResults_robustness_long, HeuristicexpResults_robustness_long)
 
-# Ensure var_components has no missing values
+# Ensure 'var_components' has no missing values (replace NAs with 0)
 AllExpResults_robustness <- AllExpResults_robustness %>%
   mutate(var_components = replace_na(var_components, 0))
 
-# Compute Pareto indicators: MinVar (minimum variance) and Pareto dominance
+# Compute Pareto-related flags:
+# - MinVar: minimum variance for each (filename, Algorithm, n_components)
+# - Pareto: non-dominated under (maximize n_components, minimize var_components)
 AllExpResults_robustness <- AllExpResults_robustness %>%
   group_by(filename, Algorithm, n_components) %>%
   mutate(
@@ -128,8 +133,7 @@ AllExpResults_robustness <- AllExpResults_robustness %>%
   ) %>%
   ungroup()
 
-
-# Save the complete data frame with all experimental results to a CSV file
+# Persist the combined robustness results for downstream analysis
 write_csv(AllExpResults_robustness, "resultsRobustness/AllExpResults_robustness.csv")
 
 
@@ -138,15 +142,12 @@ write_csv(AllExpResults_robustness, "resultsRobustness/AllExpResults_robustness.
 #### Analysis of the three single-solution techniques ####
 #########################################
 
-# Filter only initial strategies with single solutions
+# Keep only one-shot strategies (Initial, Bubble, HeuristicBalanced) for paired comparisons
 single_solutions_robustness <- AllExpResults_robustness %>%
   filter(Algorithm %in% c("Initial", "Bubble", "HeuristicBalanced")) %>%
   select(filename,distribution, groups,students_per_group, mu_target,r,p, Algorithm, n_components, var_components)
 
-
-
-
-# Boxplot of the number of components by strategy
+# Boxplot: number of components by strategy
 ggplot(single_solutions_robustness, aes(x = Algorithm, y = n_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   theme_minimal() +
@@ -155,7 +156,7 @@ ggplot(single_solutions_robustness, aes(x = Algorithm, y = n_components, fill = 
        y = "Number of components") +
   theme(legend.position = "none")
 
-# Boxplot of variance by strategy
+# Boxplot: variance by strategy
 ggplot(single_solutions_robustness, aes(x = Algorithm, y = var_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   theme_minimal() +
@@ -164,24 +165,25 @@ ggplot(single_solutions_robustness, aes(x = Algorithm, y = var_components, fill 
        y = "Variance") +
   theme(legend.position = "none")
 
-# Convert to wide format to apply Friedman test on number of components
+# Reshape to wide format for Friedman test on number of components
 wide_data <- single_solutions_robustness %>%
   select(filename, Algorithm, n_components) %>%
   pivot_wider(names_from = Algorithm, values_from = n_components) %>%
   drop_na()
 
-# Friedman test (non-parametric equivalent of repeated-measures ANOVA)
+# Friedman test (non-parametric repeated-measures ANOVA analogue): components
 friedman.test(as.matrix(wide_data[, -1]))
 
-# Same for variance
+# Prepare wide format for variance
 wide_data_var <- single_solutions_robustness %>%
   select(filename, Algorithm, var_components) %>%
   pivot_wider(names_from = Algorithm, values_from = var_components) %>%
   drop_na()
 
+# Friedman test: variance
 friedman.test(as.matrix(wide_data_var[, -1]))
 
-# Pairwise post-hoc comparisons using Wilcoxon test (paired)
+# Pairwise post-hoc Wilcoxon signed-rank tests (paired) between strategies
 wilcox.test(wide_data$Initial, wide_data$Bubble, paired = TRUE)
 wilcox.test(wide_data$Initial, wide_data$HeuristicBalanced, paired = TRUE)
 wilcox.test(wide_data$Bubble, wide_data$HeuristicBalanced, paired = TRUE)
@@ -191,10 +193,10 @@ wilcox.test(wide_data$Bubble, wide_data$HeuristicBalanced, paired = TRUE)
 #### Boxplots: Number of Components and Variance by Strategy
 ########################################################
 
-# Use color palette from RColorBrewer
+# Fixed palette for consistent fills across plots
 palette_colors <- brewer.pal(3, "Dark2")
 
-# Boxplot of number of components
+# Boxplot: number of components by strategy (saved to robustness figures)
 p1 <- ggplot(single_solutions_robustness, aes(x = Algorithm, y = n_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   scale_fill_manual(values = palette_colors) +
@@ -207,7 +209,7 @@ p1 <- ggplot(single_solutions_robustness, aes(x = Algorithm, y = n_components, f
 ggsave("resultsRobustness/Figuras robustness/3_boxplot_components.pdf", plot = p1, width = 8, height = 5)
 ggsave("resultsRobustness/Figuras robustness/3_boxplot_components.jpg", plot = p1, width = 8, height = 5, dpi = 300)
 
-# Boxplot of component size variance
+# Boxplot: variance of component sizes by strategy (saved to robustness figures)
 p2 <- ggplot(single_solutions_robustness, aes(x = Algorithm, y = var_components, fill = Algorithm)) +
   geom_boxplot(alpha = 0.7) +
   scale_fill_manual(values = palette_colors) +
@@ -224,7 +226,7 @@ ggsave("resultsRobustness/Figuras robustness/4_boxplot_variance.jpg", plot = p2,
 #### Friedman Tests on Number of Components and Variance
 ######################################################
 
-# Friedman test on number of components
+# Friedman test on components (wide matrix input)
 wide_data <- single_solutions_robustness %>%
   select(filename, Algorithm, n_components) %>%
   pivot_wider(names_from = Algorithm, values_from = n_components) %>%
@@ -232,7 +234,7 @@ wide_data <- single_solutions_robustness %>%
 
 test_components <- friedman.test(as.matrix(wide_data[, -1]))
 
-# Save the test result
+# Save the test-statistics for components
 sink("resultsRobustness/Figuras robustness/friedman_test_components.txt")
 cat("Friedman Test for Number of Components:\n\n")
 print(test_components)
@@ -246,6 +248,7 @@ wide_data_var <- single_solutions_robustness %>%
 
 test_variance <- friedman.test(as.matrix(wide_data_var[, -1]))
 
+# Save the test-statistics for variance
 sink("resultsRobustness/Figuras robustness/friedman_test_variance.txt")
 cat("Friedman Test for Variance of Component Sizes:\n\n")
 print(test_variance)
@@ -256,7 +259,8 @@ sink()
 
 
 
-# Función para obtener la frontera Pareto (maximizar n_components, minimizar var_components)
+# Function to compute the Pareto front
+# Objective: maximize 'n_components' and minimize 'var_components'
 pareto_front <- function(df){
   dominated <- logical(nrow(df))
   for(i in seq_len(nrow(df))){
@@ -271,18 +275,14 @@ pareto_front <- function(df){
 
 
 
-# 1. Seleccionar columnas relevantes (incluye todo lo necesario)
+# 1) Select relevant columns for Pareto analysis (keep all necessary factors for grouping)
 pareto_data <- AllExpResults_robustness %>%
   select(filename, Algorithm, groups, students_per_group, mu_target,r,p,seed,
          n_components, var_components) %>%
   distinct()
 
-
-
-
-
-# 2. Obtener frontera de Pareto por problema (filename)
-# Usamos todos los campos, no solo n_components y var_components
+# 2) Compute the Pareto front per problem instance (filename)
+# Use all fields so we can later aggregate/join by any of them
 pareto_global_detailed <- pareto_data %>%
   group_by(filename) %>%
   nest() %>%
@@ -290,10 +290,9 @@ pareto_global_detailed <- pareto_data %>%
     pareto_points = map(data, pareto_front)
   ) %>%
   select(filename, pareto_points) %>%
-  unnest(pareto_points)  # esto devuelve todos los campos originales de cada punto
+  unnest(pareto_points)  # returns each Pareto point with all original fields intact
 
-
-
+# Aggregate: list which algorithms achieved each Pareto point within an instance
 pareto_with_algorithms <- pareto_global_detailed %>%
   group_by(filename, n_components, var_components, groups, students_per_group, mu_target,r,p,seed) %>%
   summarise(
@@ -301,46 +300,43 @@ pareto_with_algorithms <- pareto_global_detailed %>%
     .groups = "drop"
   )
 
-
-# Puntos únicos de la frontera por problema
+# Count unique Pareto points per instance
 pareto_unique_points <- pareto_global_detailed %>%
   distinct(filename, n_components, var_components) %>%
   group_by(filename) %>%
   summarise(total_pareto_points = n(), .groups = "drop")
 
-# Cuántos puntos de la frontera ha encontrado cada algoritmo por problema
+# Count how many Pareto points each algorithm discovered per instance
 pareto_points_by_algorithm <- pareto_global_detailed %>%
   distinct(filename, n_components, var_components, Algorithm) %>%
   group_by(filename, Algorithm) %>%
   summarise(points_found = n(), .groups = "drop")
 
-
+# Compute coverage (% of Pareto points) per algorithm and instance
 pareto_coverage <- pareto_points_by_algorithm %>%
   left_join(pareto_unique_points, by = "filename") %>%
   mutate(percent_covered = round(100 * points_found / total_pareto_points, 2))
 
-
-# Transformar a formato ancho
+# Wide table of coverage per instance (missing algorithms filled with 0 hits)
 pareto_wide <- pareto_coverage %>%
   select(filename, Algorithm, points_found, total_pareto_points) %>%
   pivot_wider(
     names_from = Algorithm,
     values_from = points_found,
-    values_fill = 0  # Si un algoritmo no está, se pone 0
+    values_fill = 0  # if an algorithm is absent, assume 0 points found
   )
 
 
 ##################
-#empirical
+# Empirical / Geometric / Negative Binomial subsets
 ##################
 
-
+# Split coverage by distribution label embedded in the filename
 pareto_wide_EMP   <- pareto_wide %>% filter(str_detect(filename, regex("EMP",   ignore_case = TRUE)))
 pareto_wide_GEOM  <- pareto_wide %>% filter(str_detect(filename, regex("GEOM",  ignore_case = TRUE)))
 pareto_wide_NEGBIN<- pareto_wide %>% filter(str_detect(filename, regex("NEGBIN",ignore_case = TRUE)))
 
-
-
+# Parse EMP filenames: ds_EMP_<groups>G_<students>S_<courses>C_fixed_<seed>
 pareto_wide_EMP <- pareto_wide_EMP %>%
   mutate(filename_clean = str_remove(filename, "\\.csv$")) %>%
   separate(
@@ -358,7 +354,7 @@ pareto_wide_EMP <- pareto_wide_EMP %>%
   ) %>%
   select(-prefix, -dist, -filename_clean)
 
-
+# Parse GEOM filenames: ds_GEOM_<groups>G_<students>S_<courses>C_mu<...>_p<...>_<seed>
 pareto_wide_GEOM <- pareto_wide_GEOM %>%
   mutate(filename_clean = str_remove(filename, "\\.csv$")) %>%
   separate(
@@ -377,7 +373,7 @@ pareto_wide_GEOM <- pareto_wide_GEOM %>%
   ) %>%
   select(-prefix, -dist, -filename_clean)
 
-
+# Parse NEGBIN filenames: ds_NEGBIN_<groups>G_<students>S_<courses>C_mu<...>_r<...>_p<...>_<seed>
 pareto_wide_NEGBIN <- pareto_wide_NEGBIN %>%
   mutate(filename_clean = str_remove(filename, "\\.csv$")) %>%
   separate(
@@ -397,11 +393,7 @@ pareto_wide_NEGBIN <- pareto_wide_NEGBIN %>%
   ) %>%
   select(-prefix, -dist, -filename_clean)
 
-
-
-
-
-# Reordenar columnas a tu gusto
+# Reorder columns for readability and align algorithm naming
 pareto_wide_EMP <- pareto_wide_EMP %>%
   rename(Heuristic = HeuristicBalanced) %>%
   relocate(
@@ -427,10 +419,7 @@ pareto_wide_NEGBIN <- pareto_wide_NEGBIN %>%
     groups, mu, r, p, seed
   )
 
-
-
-
-
+# Summaries: average Pareto coverage per distribution family and hyperparameters
 pareto_final_summary_EMP <- pareto_wide_EMP %>%
   group_by(groups, students, fixed) %>%
   summarise(
@@ -457,7 +446,6 @@ pareto_final_summary_GEOM <- pareto_wide_GEOM %>%
   ) %>%
   mutate(across(where(is.numeric), ~ round(.x, 2)))
 
-
 pareto_final_summary_NEGBIN <- pareto_wide_NEGBIN %>%
   group_by(groups, students, mu, r, p) %>%
   summarise(
@@ -471,7 +459,7 @@ pareto_final_summary_NEGBIN <- pareto_wide_NEGBIN %>%
   ) %>%
   mutate(across(where(is.numeric), ~ round(.x, 2)))
 
-
+# Convert averages to percentages of total Pareto points (EMP)
 pareto_percent_summary_EMP <- pareto_final_summary_EMP %>%
   mutate(
     pct_initial   = 100 * avg_initial   / avg_total_pareto_points,
@@ -482,7 +470,7 @@ pareto_percent_summary_EMP <- pareto_final_summary_EMP %>%
   ) %>%
   mutate(across(starts_with("pct_"), ~ round(.x, 2)))
 
-
+# Convert averages to percentages of total Pareto points (GEOM)
 pareto_percent_summary_GEOM <- pareto_final_summary_GEOM %>%
   mutate(
     pct_initial   = 100 * avg_initial   / avg_total_pareto_points,
@@ -493,7 +481,7 @@ pareto_percent_summary_GEOM <- pareto_final_summary_GEOM %>%
   ) %>%
   mutate(across(starts_with("pct_"), ~ round(.x, 2)))
 
-
+# Convert averages to percentages of total Pareto points (NEGBIN)
 pareto_percent_summary_NEGBIN <- pareto_final_summary_NEGBIN %>%
   mutate(
     pct_initial   = 100 * avg_initial   / avg_total_pareto_points,
@@ -504,15 +492,13 @@ pareto_percent_summary_NEGBIN <- pareto_final_summary_NEGBIN %>%
   ) %>%
   mutate(across(starts_with("pct_"), ~ round(.x, 2)))
 
+##### EMP Plots
 
-#####Graficos EMP
-
-
-# Carpeta de salida
+# Ensure output directory exists
 outdir <- "resultsRobustness/Figuras robustness"
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
-# Long EMP
+# Long-format table for EMP heatmap
 pareto_percent_long_EMP <- pareto_percent_summary_EMP %>%
   select(groups, students,
          pct_initial, pct_bubble, pct_heuristic, pct_sa, pct_ga) %>%
@@ -531,14 +517,14 @@ pareto_percent_long_EMP <- pareto_percent_summary_EMP %>%
     Algorithm = factor(Algorithm, levels = c("Initial", "Bubble", "Heuristic", "SA", "GA"))
   )
 
-
-# Para que el eje X muestre exactamente los valores de students presentes
+# Fix x-axis ticks to the observed 'students' values
 students_breaks <- sort(unique(pareto_percent_long_EMP$students))
 
+# Heatmap: % of Pareto points by strategy (EMP), faceted by number of groups
 p_EMP <- ggplot(pareto_percent_long_EMP,
                 aes(x = students, y = Algorithm, fill = Percent)) +
   geom_tile(color = "white") +
-  facet_wrap(~ groups, ncol = 1, labeller = label_both) +   # ← tres gráficos, uno por 'groups'
+  facet_wrap(~ groups, ncol = 1, labeller = label_both) +   # one panel per 'groups'
   scale_x_continuous(breaks = students_breaks) +
   scale_fill_viridis(
     name = "% of Pareto points",
@@ -555,20 +541,17 @@ p_EMP <- ggplot(pareto_percent_long_EMP,
 
 print(p_EMP)
 
+# Save EMP heatmap
 ggsave(file.path(outdir, "EMP_Pareto_points_percent_by_strategy_students_by_groups.pdf"),
        plot = p_EMP, width = 10, height = 5, units = "in")
 ggsave(file.path(outdir, "EMP_Pareto_points_percent_by_strategy_students_by_groups.jpg"),
        plot = p_EMP, width = 10, height = 5, units = "in", dpi = 300)
 
-
-
-
-
-# Carpeta de salida (por si no existe)
+# Re-ensure output directory (idempotent)
 outdir <- "resultsRobustness/Figuras robustness"
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
-# 1) Pasar a formato largo para GEOM (si no lo tienes ya)
+# GEOM: build long-format with percentages (from averages) for plotting
 pareto_percent_long_GEOM <- pareto_final_summary_GEOM %>%
   select(groups, students, p,
          avg_total_pareto_points,
@@ -595,7 +578,7 @@ pareto_percent_long_GEOM <- pareto_final_summary_GEOM %>%
     Algorithm = factor(Algorithm, levels = c("Initial", "Bubble", "Heuristic", "SA", "GA"))
   )
 
-# 2) Generar un gráfico por cada valor de students
+# GEOM: one heatmap per 'students' value; panels by 'groups'
 students_vals <- sort(unique(pareto_percent_long_GEOM$students))
 
 for (s in students_vals) {
@@ -622,24 +605,25 @@ for (s in students_vals) {
       y = "Strategy"
     )
   
-  
   print(p_geom_s)
   
+  # Save GEOM heatmap per-students setting
   base <- paste0("GEOM_Pareto_points_percent_by_strategy_p_by_groups_students", s)
   ggsave(file.path(outdir, paste0(base, ".pdf")), plot = p_geom_s, width = 7, height = 9, units = "in")
   ggsave(file.path(outdir, paste0(base, ".jpg")), plot = p_geom_s, width = 7, height = 9, units = "in", dpi = 300)
 }
 
+# Redundant imports are kept as in the original script
 library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(viridis)
 
-# Carpeta de salida
+# Ensure output directory exists (safe to rerun)
 outdir <- "resultsRobustness/Figuras robustness"
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
-# 1) Pasar a formato largo (si no lo tienes ya)
+# NEGBIN: long-format with percentages (from averages) for plotting
 pareto_percent_long_NEGBIN <- pareto_final_summary_NEGBIN %>%
   select(groups, students, r, mu,
          avg_total_pareto_points,
@@ -666,7 +650,7 @@ pareto_percent_long_NEGBIN <- pareto_final_summary_NEGBIN %>%
     Algorithm = factor(Algorithm, levels = c("Initial", "Bubble", "Heuristic", "SA", "GA"))
   )
 
-# 2) Un gráfico por combinación (students, r); paneles por groups
+# NEGBIN: one heatmap per (students, r) combination; panels by 'groups'
 students_vals <- sort(unique(pareto_percent_long_NEGBIN$students))
 r_vals <- sort(unique(pareto_percent_long_NEGBIN$r))
 
@@ -680,7 +664,7 @@ for (s in students_vals) {
     p_negbin_sr <- ggplot(df_sr, aes(x = factor(mu, levels = mu_levels),
                                      y = Algorithm, fill = Percent)) +
       geom_tile(color = "white") +
-      facet_wrap(~ groups, ncol = 1, labeller = label_both) +  # apilados verticalmente
+      facet_wrap(~ groups, ncol = 1, labeller = label_both) +  # stacked vertically
       scale_fill_viridis(
         name = "% of Pareto points",
         limits = c(0, 100),
@@ -700,11 +684,10 @@ for (s in students_vals) {
     
     print(p_negbin_sr)
     
+    # Save NEGBIN heatmap per-(students, r) setting
     base <- paste0("NEGBIN_Pareto_points_percent_by_strategy_mu_by_groups_students", s, "_r", rv)
     ggsave(file.path(outdir, paste0(base, ".pdf")), plot = p_negbin_sr, width = 7, height = 9, units = "in")
     ggsave(file.path(outdir, paste0(base, ".jpg")), plot = p_negbin_sr, width = 7, height = 9, units = "in", dpi = 300)
   }
 }
-
-
 
